@@ -1,0 +1,129 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model - represents a player
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  spotifyId    String   @unique
+  spotifyToken String?  // Optional, can be null
+  refreshToken String?  // Optional, for token refresh
+  name         String?  // Optional, from Spotify profile
+  image        String?  // Optional, profile picture URL
+  
+  // Relationships
+  hostedGames  Game[]   @relation("GameHost")
+  gameScores   Score[]
+  responses    Response[]
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("users") // Table name in database
+}
+
+// Game model - represents a quiz session
+model Game {
+  id          String   @id @default(cuid())
+  code        String   @unique // 6-digit room code like "ABC123"
+  hostId      String
+  status      GameStatus @default(WAITING)
+  maxPlayers  Int      @default(8)
+  roundCount  Int      @default(10)
+  
+  // Relationships
+  host        User     @relation("GameHost", fields: [hostId], references: [id])
+  rounds      Round[]
+  scores      Score[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("games")
+}
+
+// Round model - represents one question in a game
+model Round {
+  id              String   @id @default(cuid())
+  gameId          String
+  roundNumber     Int      // 1, 2, 3, etc.
+  
+  // Song information
+  trackId         String   // Spotify track ID
+  trackName       String   // Song title
+  artistName      String   // Artist name
+  previewUrl      String?  // 30-second preview URL
+  
+  // Quiz data
+  correctPlaylist String   // Name of the correct playlist
+  options         String[] // Array of playlist options (including correct one)
+  
+  // Timing
+  startedAt       DateTime?
+  endedAt         DateTime?
+  
+  // Relationships
+  game            Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  responses       Response[]
+  
+  createdAt       DateTime @default(now())
+
+  @@unique([gameId, roundNumber]) // Each game can only have one round with each number
+  @@map("rounds")
+}
+
+// Response model - represents a player's answer to a round
+model Response {
+  id          String   @id @default(cuid())
+  userId      String
+  roundId     String
+  answer      String   // The playlist name the user chose
+  isCorrect   Boolean
+  points      Int      @default(0)
+  responseTime Int     // Time taken to answer in milliseconds
+  
+  // Relationships
+  user        User     @relation(fields: [userId], references: [id])
+  round       Round    @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, roundId]) // Each user can only answer each round once
+  @@map("responses")
+}
+
+// Score model - represents final scores for a game
+model Score {
+  id          String   @id @default(cuid())
+  userId      String
+  gameId      String
+  totalPoints Int      @default(0)
+  correctAnswers Int   @default(0)
+  rank        Int?     // Final ranking in the game
+  
+  // Relationships
+  user        User     @relation(fields: [userId], references: [id])
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, gameId]) // Each user has one score per game
+  @@map("scores")
+}
+
+// Enum for game status
+enum GameStatus {
+  WAITING    // Lobby phase, waiting for players
+  PLAYING    // Game in progress
+  FINISHED   // Game completed
+  CANCELLED  // Game was cancelled
+}
