@@ -1,64 +1,71 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/app/api/auth/[...nextauth]/route';
-import { spotifyService } from '@/lib/spotify';
+import { NextRequest, NextResponse } from 'next/server'
+import { auth } from '@/app/api/auth/[...nextauth]/route'
 
-interface RouteParams {
-  params: {
-    playlistId: string;
-  };
-}
-
-export async function GET(request: NextRequest, { params }: RouteParams) {
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ playlistId: string }> }
+) {
   try {
-    // Check authentication
-    const session = await auth();
+    // ✅ FIXED: Await the params first!
+    const { playlistId } = await params
     
-    if (!session || !session.accessToken) {
+    // Get the user's session
+    const session = await auth()
+    if (!session?.accessToken) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    // Get query parameters for pagination
+    const { searchParams } = new URL(request.url)
+    const offset = searchParams.get('offset') || '0'
+    const limit = searchParams.get('limit') || '50'
+
+    // Fetch tracks from Spotify API
+    const response = await fetch(
+      `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${session.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    )
+
+    if (!response.ok) {
+      console.error('Spotify API error:', response.status, response.statusText)
       return NextResponse.json(
-        { error: 'Not authenticated' }, 
-        { status: 401 }
-      );
+        { error: 'Failed to fetch tracks from Spotify' }, 
+        { status: response.status }
+      )
     }
 
-    const { playlistId } = params;
+    const data = await response.json()
     
-    // Get query parameters
-    const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get('limit') || '50');
-    const offset = parseInt(searchParams.get('offset') || '0');
-    const previewsOnly = searchParams.get('previews_only') === 'true';
+    // Filter out tracks without preview URLs and format the response
+    const tracksWithPreviews = data.items
+      .filter((item: any) => item.track?.preview_url)
+      .map((item: any) => ({
+        id: item.track.id,
+        name: item.track.name,
+        artists: item.track.artists.map((artist: any) => artist.name).join(', '),
+        preview_url: item.track.preview_url,
+        album: item.track.album.name,
+        duration_ms: item.track.duration_ms
+      }))
 
-    let tracks;
-    
-    if (previewsOnly) {
-      // Get only tracks with 30-second previews (for the quiz)
-      tracks = await spotifyService.getPlaylistTracksWithPreviews(
-        playlistId,
-        session.accessToken
-      );
-      
-      // Return in a format similar to Spotify's API
-      return NextResponse.json({
-        items: tracks.map(track => ({ track })),
-        total: tracks.length,
-        next: null
-      });
-    } else {
-      // Get all tracks (for display purposes)
-      tracks = await spotifyService.getPlaylistTracks(
-        playlistId,
-        session.accessToken,
-        limit,
-        offset
-      );
-      
-      return NextResponse.json(tracks);
-    }
+    return NextResponse.json({
+      tracks: tracksWithPreviews,
+      total: data.total,
+      offset: data.offset,
+      limit: data.limit,
+      has_more: data.offset + data.limit < data.total
+    })
+
   } catch (error) {
-    console.error('Error in /api/spotify/playlist/[playlistId]/tracks:', error);
+    console.error('Error fetching playlist tracks:', error)
     return NextResponse.json(
-      { error: 'Failed to fetch playlist tracks' }, 
+      { error: 'Internal server error' }, 
       { status: 500 }
-    );
+    )
   }
 }

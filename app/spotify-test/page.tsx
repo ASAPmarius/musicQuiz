@@ -1,39 +1,40 @@
+// app/spotify-test/page.tsx
 'use client'
 
 import { useSession } from "next-auth/react"
-import { signIn } from "next-auth/react"
+import { signIn, signOut } from "next-auth/react"
 import { useState, useEffect } from "react"
 
-interface SpotifyPlaylist {
-  id: string;
-  name: string;
-  description: string;
-  images: Array<{ url: string }>;
-  tracks: { total: number };
-  owner: { display_name: string };
+interface Track {
+  id: string
+  name: string
+  artists: string
+  preview_url: string
+  album: string
+  duration_ms: number
 }
 
-interface SpotifyTrack {
-  id: string;
-  name: string;
-  artists: Array<{ name: string }>;
-  preview_url: string | null;
-  album: {
-    name: string;
-    images: Array<{ url: string }>;
-  };
+interface Playlist {
+  id: string
+  name: string
+  description: string
+  tracks: { total: number }
+  images: Array<{ url: string }>
+  owner: string
+  public: boolean
 }
 
 export default function SpotifyTest() {
   const { data: session, status } = useSession()
-  const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([])
+  const [playlists, setPlaylists] = useState<Playlist[]>([])
   const [selectedPlaylist, setSelectedPlaylist] = useState<string | null>(null)
-  const [tracks, setTracks] = useState<SpotifyTrack[]>([])
+  const [tracks, setTracks] = useState<Track[]>([])
+  const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null)
+  const [playingTrack, setPlayingTrack] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null)
 
-  // Load user's playlists when they log in
+  // Fetch playlists when user is authenticated
   useEffect(() => {
     if (session?.accessToken) {
       fetchPlaylists()
@@ -41,87 +42,98 @@ export default function SpotifyTest() {
   }, [session])
 
   const fetchPlaylists = async () => {
-    setLoading(true)
-    setError(null)
     try {
+      setLoading(true)
+      setError(null)
+      
       const response = await fetch('/api/spotify/playlists')
-      if (!response.ok) throw new Error('Failed to fetch playlists')
+      if (!response.ok) {
+        throw new Error(`Failed to fetch playlists: ${response.status}`)
+      }
       
       const data = await response.json()
-      setPlaylists(data.items || [])
+      setPlaylists(data.playlists)
     } catch (err) {
-      setError('Failed to load playlists: ' + (err as Error).message)
       console.error('Error fetching playlists:', err)
+      setError(err instanceof Error ? err.message : 'Failed to fetch playlists')
     } finally {
       setLoading(false)
     }
   }
 
-  const fetchPlaylistTracks = async (playlistId: string) => {
-    setLoading(true)
-    setError(null)
-    setSelectedPlaylist(playlistId)
+  const fetchTracks = async (playlistId: string) => {
     try {
-      // Fetch tracks with previews only (for the quiz)
-      const response = await fetch(`/api/spotify/playlist/${playlistId}/tracks?previews_only=true`)
-      if (!response.ok) throw new Error('Failed to fetch tracks')
+      setLoading(true)
+      setError(null)
+      setSelectedPlaylist(playlistId)
+      
+      const response = await fetch(`/api/spotify/playlist/${playlistId}/tracks`)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch tracks: ${response.status}`)
+      }
       
       const data = await response.json()
-      const trackList = data.items?.map((item: any) => item.track) || []
-      setTracks(trackList)
+      setTracks(data.tracks)
     } catch (err) {
-      setError('Failed to load tracks: ' + (err as Error).message)
       console.error('Error fetching tracks:', err)
+      setError(err instanceof Error ? err.message : 'Failed to fetch tracks')
     } finally {
       setLoading(false)
     }
   }
 
-  const playPreview = (previewUrl: string, trackId: string) => {
-    // Stop any currently playing audio
-    const currentAudio = document.querySelector('audio[data-playing="true"]') as HTMLAudioElement
+  const playPreview = (track: Track) => {
+    // Stop current audio if playing
     if (currentAudio) {
       currentAudio.pause()
-      currentAudio.removeAttribute('data-playing')
+      currentAudio.currentTime = 0
     }
 
-    // If clicking the same track, just stop
-    if (currentlyPlaying === trackId) {
-      setCurrentlyPlaying(null)
+    if (playingTrack === track.id) {
+      // If same track, stop playing
+      setPlayingTrack(null)
+      setCurrentAudio(null)
       return
     }
 
-    // Play new audio
-    const audio = new Audio(previewUrl)
-    audio.setAttribute('data-playing', 'true')
+    // Play new track
+    const audio = new Audio(track.preview_url)
     audio.play()
-    setCurrentlyPlaying(trackId)
+    setCurrentAudio(audio)
+    setPlayingTrack(track.id)
 
-    // Stop when audio ends
-    audio.addEventListener('ended', () => {
-      setCurrentlyPlaying(null)
-    })
+    // Auto-stop when track ends
+    audio.onended = () => {
+      setPlayingTrack(null)
+      setCurrentAudio(null)
+    }
+  }
+
+  const formatDuration = (ms: number) => {
+    const seconds = Math.floor((ms / 1000) % 60)
+    const minutes = Math.floor((ms / (1000 * 60)) % 60)
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
   }
 
   if (status === "loading") {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-xl">Loading...</div>
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-green-100 flex items-center justify-center">
+        <div className="text-xl text-green-800">Loading...</div>
       </div>
     )
   }
 
   if (!session) {
     return (
-      <div className="min-h-screen bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center">
-        <div className="bg-white p-8 rounded-lg shadow-xl max-w-md w-full text-center">
-          <h1 className="text-2xl font-bold mb-4">🎵 Spotify API Test</h1>
-          <p className="mb-6 text-gray-600">
-            Sign in to test your Spotify integration
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-green-100 flex items-center justify-center">
+        <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center">
+          <h1 className="text-2xl font-bold mb-4 text-gray-800">🎵 Spotify Test</h1>
+          <p className="text-gray-600 mb-6">
+            Sign in with Spotify to test playlist loading and track previews
           </p>
           <button
             onClick={() => signIn('spotify')}
-            className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg w-full transition-colors"
+            className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-colors w-full"
           >
             Sign in with Spotify
           </button>
@@ -131,153 +143,131 @@ export default function SpotifyTest() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-green-100 p-6">
       <div className="max-w-6xl mx-auto">
-        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-          <h1 className="text-3xl font-bold text-gray-800 mb-2">
-            🎵 Spotify API Test Dashboard
-          </h1>
-          <p className="text-gray-600">
-            Welcome, {session.user?.name}! Let's test your Spotify integration.
-          </p>
+        {/* Header */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-800">🎵 Spotify Test</h1>
+              <p className="text-gray-600">Welcome, {session.user?.name}!</p>
+            </div>
+            <button
+              onClick={() => signOut()}
+              className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
 
+        {/* Error Display */}
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <p className="text-red-700">❌ {error}</p>
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
+            <strong>Error:</strong> {error}
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Playlists Section */}
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <div className="flex items-center justify-between mb-4">
+        {/* Main Content */}
+        <div className="grid md:grid-cols-2 gap-6">
+          {/* Playlists */}
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold text-gray-800">Your Playlists</h2>
               <button
                 onClick={fetchPlaylists}
                 disabled={loading}
-                className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm transition-colors disabled:opacity-50"
+                className="bg-green-500 hover:bg-green-600 disabled:bg-gray-400 text-white px-3 py-1 rounded text-sm transition-colors"
               >
-                {loading ? '🔄 Loading...' : '🔄 Refresh'}
+                {loading ? 'Loading...' : 'Refresh'}
               </button>
             </div>
-
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {playlists.length === 0 && !loading ? (
-                <p className="text-gray-500 text-center py-8">
-                  No playlists found. Try refreshing or check your Spotify account.
-                </p>
-              ) : (
-                playlists.map((playlist) => (
-                  <div
-                    key={playlist.id}
-                    className={`p-3 border rounded-lg cursor-pointer transition-colors ${
-                      selectedPlaylist === playlist.id
-                        ? 'bg-green-50 border-green-200'
-                        : 'hover:bg-gray-50 border-gray-200'
-                    }`}
-                    onClick={() => fetchPlaylistTracks(playlist.id)}
-                  >
-                    <div className="flex items-center space-x-3">
-                      {playlist.images?.[0] && (
-                        <img
-                          src={playlist.images[0].url}
-                          alt={playlist.name}
-                          className="w-12 h-12 rounded object-cover"
-                        />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-medium text-gray-900 truncate">
-                          {playlist.name}
-                        </h3>
-                        <p className="text-sm text-gray-500">
-                          {playlist.tracks.total} tracks • by {playlist.owner.display_name}
-                        </p>
-                      </div>
+            
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {playlists.map((playlist) => (
+                <div
+                  key={playlist.id}
+                  onClick={() => fetchTracks(playlist.id)}
+                  className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                    selectedPlaylist === playlist.id
+                      ? 'bg-green-100 border-2 border-green-500'
+                      : 'bg-gray-50 hover:bg-gray-100 border-2 border-transparent'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    {playlist.images[0] && (
+                      <img
+                        src={playlist.images[0].url}
+                        alt={playlist.name}
+                        className="w-12 h-12 rounded"
+                      />
+                    )}
+                    <div>
+                      <h3 className="font-semibold text-gray-800">{playlist.name}</h3>
+                      <p className="text-sm text-gray-600">{playlist.tracks.total} tracks</p>
                     </div>
                   </div>
-                ))
+                </div>
+              ))}
+              
+              {playlists.length === 0 && !loading && (
+                <p className="text-gray-500 text-center py-4">No playlists found</p>
               )}
             </div>
           </div>
 
-          {/* Tracks Section */}
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">
-              Tracks with Previews
-              {selectedPlaylist && (
-                <span className="text-sm font-normal text-gray-500 ml-2">
-                  ({tracks.length} playable tracks)
-                </span>
-              )}
-            </h2>
-
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {!selectedPlaylist ? (
-                <p className="text-gray-500 text-center py-8">
-                  👈 Select a playlist to see tracks with preview clips
-                </p>
-              ) : tracks.length === 0 && !loading ? (
-                <p className="text-gray-500 text-center py-8">
-                  😕 No tracks with preview clips found in this playlist.
-                  <br />
-                  <span className="text-sm">Try a different playlist!</span>
-                </p>
-              ) : (
-                tracks.map((track) => (
+          {/* Tracks */}
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">Track Previews</h2>
+            
+            {selectedPlaylist ? (
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {tracks.map((track) => (
                   <div
                     key={track.id}
-                    className="p-3 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                    className="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                   >
-                    <div className="flex items-center space-x-3">
-                      {track.album.images?.[0] && (
-                        <img
-                          src={track.album.images[0].url}
-                          alt={track.album.name}
-                          className="w-12 h-12 rounded object-cover"
-                        />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-medium text-gray-900 truncate">
-                          {track.name}
-                        </h4>
-                        <p className="text-sm text-gray-500 truncate">
-                          {track.artists.map(artist => artist.name).join(', ')}
-                        </p>
+                    <div className="flex justify-between items-center">
+                      <div className="flex-1">
+                        <h4 className="font-semibold text-gray-800">{track.name}</h4>
+                        <p className="text-sm text-gray-600">{track.artists}</p>
+                        <p className="text-xs text-gray-500">{track.album} • {formatDuration(track.duration_ms)}</p>
                       </div>
-                      {track.preview_url && (
-                        <button
-                          onClick={() => playPreview(track.preview_url!, track.id)}
-                          className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${
-                            currentlyPlaying === track.id
-                              ? 'bg-red-500 text-white hover:bg-red-600'
-                              : 'bg-green-500 text-white hover:bg-green-600'
-                          }`}
-                        >
-                          {currentlyPlaying === track.id ? '⏹️ Stop' : '▶️ Play'}
-                        </button>
-                      )}
+                      <button
+                        onClick={() => playPreview(track)}
+                        className={`ml-4 px-4 py-2 rounded-lg font-medium transition-colors ${
+                          playingTrack === track.id
+                            ? 'bg-red-500 hover:bg-red-600 text-white'
+                            : 'bg-green-500 hover:bg-green-600 text-white'
+                        }`}
+                      >
+                        {playingTrack === track.id ? '⏹️ Stop' : '▶️ Play'}
+                      </button>
                     </div>
                   </div>
-                ))
-              )}
-            </div>
+                ))}
+                
+                {tracks.length === 0 && !loading && (
+                  <p className="text-gray-500 text-center py-4">
+                    No tracks with previews found in this playlist
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-gray-500 text-center py-8">
+                Select a playlist to view tracks
+              </p>
+            )}
           </div>
         </div>
 
-        {/* Success Message */}
-        {playlists.length > 0 && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-6 mt-6">
-            <div className="flex items-center space-x-2">
-              <span className="text-2xl">🎉</span>
-              <div>
-                <h3 className="font-bold text-green-800">
-                  Spotify API Integration Working!
-                </h3>
-                <p className="text-green-700">
-                  Successfully loaded {playlists.length} playlists. 
-                  Try clicking on playlists to see tracks with preview clips.
-                </p>
+        {/* Loading Indicator */}
+        {loading && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+            <div className="bg-white p-6 rounded-lg">
+              <div className="flex items-center space-x-3">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500"></div>
+                <span>Loading...</span>
               </div>
             </div>
           </div>
