@@ -15,35 +15,43 @@ export const authOptions: NextAuthOptions = {
       clientSecret: process.env.SPOTIFY_CLIENT_SECRET!,
       authorization: {
         params: {
-          scope: 'user-read-email playlist-read-private user-library-read streaming user-read-playback-state user-modify-playback-state'
+          // 🎯 BACK TO WORKING SCOPES - No invalid web-playback scope
+          scope: [
+            'user-read-email',
+            'playlist-read-private',
+            'playlist-read-collaborative',
+            'user-library-read',
+            'streaming',                    // ✅ Essential for Web Playback SDK
+            'user-read-playback-state',     // ✅ Essential for reading state
+            'user-modify-playback-state',   // ✅ Essential for controls
+            'user-read-currently-playing',
+            'user-read-recently-played',
+            'app-remote-control'            // ✅ Additional playback control
+          ].join(' '),
+          show_dialog: 'true'  // Force fresh tokens
         }
       }
     })
   ],
   
   callbacks: {
-    // ✅ Force account update on every sign-in
     async signIn({ account, profile }) {
       if (account?.provider === 'spotify' && profile?.email) {
-        console.log('🔄 Forcing account update on sign-in')
+        console.log('🔄 Sign-in with WORKING scopes (no web-playback)')
+        console.log('🔍 Scopes that actually work:', account.scope)
         
         try {
-          // Find existing user by email
           const existingUser = await prisma.user.findUnique({
             where: { email: profile.email },
             include: { accounts: true }
           })
 
           if (existingUser) {
-            console.log('👤 Found existing user, updating Spotify account...')
-            
-            // Find existing Spotify account
             const existingAccount = existingUser.accounts.find(acc => acc.provider === 'spotify')
             
             if (existingAccount) {
-              console.log('🔄 Updating existing Spotify account with new tokens')
+              console.log('🔄 Updating account with proven working scopes')
               
-              // Update the account with new tokens and scopes
               await prisma.account.update({
                 where: { id: existingAccount.id },
                 data: {
@@ -55,12 +63,11 @@ export const authOptions: NextAuthOptions = {
                 }
               })
               
-              console.log('✅ Account updated with new tokens and scopes')
+              console.log('✅ Account updated with working scopes')
             }
           }
         } catch (error) {
           console.error('❌ Error updating account:', error)
-          // Don't block sign-in if update fails
         }
       }
       
@@ -68,8 +75,6 @@ export const authOptions: NextAuthOptions = {
     },
 
     async session({ session, user }) {
-      console.log('📋 Session callback for user:', user?.id)
-
       if (user?.id) {
         try {
           const account = await prisma.account.findFirst({
@@ -77,35 +82,48 @@ export const authOptions: NextAuthOptions = {
               userId: user.id,
               provider: 'spotify'
             }
-          });
-
-          console.log('🔍 Account found:', {
-            exists: !!account,
-            hasAccessToken: !!account?.access_token,
-            scope: account?.scope,
-            tokenPreview: account?.access_token?.substring(0, 20) + '...' || 'No token'
           })
 
-          if (account) {
+          if (account?.access_token) {
+            const tokenExpired = account.expires_at && account.expires_at < Date.now() / 1000
+            const hasStreaming = account.scope?.includes('streaming') || false
+            const hasModifyPlayback = account.scope?.includes('user-modify-playback-state') || false
+            
+            console.log('🔍 Session with working scopes:', {
+              tokenPreview: account.access_token.substring(0, 20) + '...',
+              scopes: account.scope,
+              hasStreaming,
+              hasModifyPlayback,
+              scopeCount: account.scope?.split(' ').length || 0,
+              tokenExpired
+            });
+
             (session as any).accessToken = account.access_token;
             (session as any).refreshToken = account.refresh_token;
             (session as any).spotifyId = account.providerAccountId;
             (session as any).tokenType = account.token_type;
             (session as any).scope = account.scope;
             (session as any).expiresAt = account.expires_at;
+            (session as any).tokenExpired = tokenExpired;
 
-            console.log('✅ Session updated with tokens')
+            const hasRequiredScopes = hasStreaming && hasModifyPlayback
+            console.log(hasRequiredScopes ? '✅ Has all required scopes for Web Playback SDK' : '❌ Missing required scopes')
           }
         } catch (error) {
           console.error('❌ Session callback error:', error)
         }
       }
 
-      return session;
+      return session
     }
   },
   
-  debug: true,
+  session: {
+    strategy: "database",
+    maxAge: 60 * 60 * 24
+  },
+  
+  debug: true
 }
 
 export default NextAuth(authOptions)
