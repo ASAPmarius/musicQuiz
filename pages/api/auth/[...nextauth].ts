@@ -15,20 +15,21 @@ export const authOptions: NextAuthOptions = {
       clientSecret: process.env.SPOTIFY_CLIENT_SECRET!,
       authorization: {
         params: {
-          // 🎯 BACK TO WORKING SCOPES - No invalid web-playback scope
+          // 🎯 FIXED SCOPES - Added user-read-private for premium detection
           scope: [
             'user-read-email',
+            'user-read-private',              // 🆕 THIS IS THE MISSING SCOPE!
             'playlist-read-private',
             'playlist-read-collaborative',
             'user-library-read',
-            'streaming',                    // ✅ Essential for Web Playback SDK
-            'user-read-playback-state',     // ✅ Essential for reading state
-            'user-modify-playback-state',   // ✅ Essential for controls
+            'streaming',                      // ✅ Essential for Web Playbook SDK
+            'user-read-playback-state',       // ✅ Essential for reading state
+            'user-modify-playback-state',     // ✅ Essential for controls
             'user-read-currently-playing',
             'user-read-recently-played',
-            'app-remote-control'            // ✅ Additional playback control
+            'app-remote-control'              // ✅ Additional playback control
           ].join(' '),
-          show_dialog: 'true'  // Force fresh tokens
+          show_dialog: 'true'  // Force fresh tokens with new scopes
         }
       }
     })
@@ -37,8 +38,8 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ account, profile }) {
       if (account?.provider === 'spotify' && profile?.email) {
-        console.log('🔄 Sign-in with WORKING scopes (no web-playback)')
-        console.log('🔍 Scopes that actually work:', account.scope)
+        console.log('🔄 Sign-in with FIXED scopes (including user-read-private)')
+        console.log('🔍 New scopes:', account.scope)
         
         try {
           const existingUser = await prisma.user.findUnique({
@@ -50,7 +51,7 @@ export const authOptions: NextAuthOptions = {
             const existingAccount = existingUser.accounts.find(acc => acc.provider === 'spotify')
             
             if (existingAccount) {
-              console.log('🔄 Updating account with proven working scopes')
+              console.log('🔄 Updating account with fixed scopes')
               
               await prisma.account.update({
                 where: { id: existingAccount.id },
@@ -63,7 +64,7 @@ export const authOptions: NextAuthOptions = {
                 }
               })
               
-              console.log('✅ Account updated with working scopes')
+              console.log('✅ Account updated with user-read-private scope')
             }
           }
         } catch (error) {
@@ -88,16 +89,19 @@ export const authOptions: NextAuthOptions = {
             const tokenExpired = account.expires_at && account.expires_at < Date.now() / 1000
             const hasStreaming = account.scope?.includes('streaming') || false
             const hasModifyPlayback = account.scope?.includes('user-modify-playback-state') || false
+            const hasReadPrivate = account.scope?.includes('user-read-private') || false // 🆕 Check for the new scope
             
-            console.log('🔍 Session with working scopes:', {
+            console.log('🔍 Session with fixed scopes:', {
               tokenPreview: account.access_token.substring(0, 20) + '...',
               scopes: account.scope,
               hasStreaming,
               hasModifyPlayback,
+              hasReadPrivate, // 🆕 Log the new scope
               scopeCount: account.scope?.split(' ').length || 0,
               tokenExpired
             });
 
+            // Add all session data
             (session as any).accessToken = account.access_token;
             (session as any).refreshToken = account.refresh_token;
             (session as any).spotifyId = account.providerAccountId;
@@ -106,8 +110,10 @@ export const authOptions: NextAuthOptions = {
             (session as any).expiresAt = account.expires_at;
             (session as any).tokenExpired = tokenExpired;
 
-            const hasRequiredScopes = hasStreaming && hasModifyPlayback
-            console.log(hasRequiredScopes ? '✅ Has all required scopes for Web Playback SDK' : '❌ Missing required scopes')
+            const hasAllRequiredScopes = hasStreaming && hasModifyPlayback && hasReadPrivate
+            console.log(hasAllRequiredScopes ? 
+              '✅ Has ALL required scopes (including user-read-private for premium detection)' : 
+              '❌ Still missing required scopes')
           }
         } catch (error) {
           console.error('❌ Session callback error:', error)
