@@ -1,57 +1,58 @@
+// app/api/spotify/playlists/route.ts
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/app/api/auth/[...nextauth]/route'
+import { getServerSession } from 'next-auth/next'
+import { authOptions } from '@/pages/api/auth/[...nextauth]'
 
 export async function GET(request: NextRequest) {
+  console.log('🎵 Playlists API called')
+  
   try {
-    // Get the user's session
-    const session = await auth()
-    if (!session?.accessToken) {
+    const session = await getServerSession(authOptions)
+    
+    if (!session || !(session as any)?.accessToken) {
+      console.log('❌ No session or token')
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
+
+    const accessToken = (session as any).accessToken
+    console.log('🎵 Using token:', accessToken.substring(0, 20) + '...')
 
     // Get query parameters for pagination
     const { searchParams } = new URL(request.url)
     const offset = searchParams.get('offset') || '0'
     const limit = searchParams.get('limit') || '50'
 
-    // Fetch user's playlists from Spotify API
     const response = await fetch(
       `https://api.spotify.com/v1/me/playlists?offset=${offset}&limit=${limit}`,
       {
         headers: {
-          'Authorization': `Bearer ${session.accessToken}`,
+          'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
       }
     )
 
+    console.log('🎵 Spotify response status:', response.status)
+
     if (!response.ok) {
-      console.error('Spotify API error:', response.status, response.statusText)
-      
-      // Handle token expiry
-      if (response.status === 401) {
-        return NextResponse.json(
-          { error: 'Spotify token expired. Please re-authenticate.' }, 
-          { status: 401 }
-        )
-      }
-      
-      return NextResponse.json(
-        { error: 'Failed to fetch playlists from Spotify' }, 
-        { status: response.status }
-      )
+      const errorText = await response.text()
+      console.error('🎵 Spotify error:', response.status, errorText)
+      return NextResponse.json({
+        error: 'Spotify API error',
+        status: response.status,
+        details: errorText
+      }, { status: response.status })
     }
 
     const data = await response.json()
-    
-    // Format the response to include only necessary data
+    console.log('✅ Got', data.items?.length, 'playlists')
+
+    // Format the response
     const formattedPlaylists = data.items.map((playlist: any) => ({
       id: playlist.id,
       name: playlist.name,
       description: playlist.description,
-      tracks: {
-        total: playlist.tracks.total
-      },
+      tracks: { total: playlist.tracks.total },
       images: playlist.images,
       owner: playlist.owner.display_name,
       public: playlist.public
@@ -66,10 +67,10 @@ export async function GET(request: NextRequest) {
     })
 
   } catch (error) {
-    console.error('Error fetching playlists:', error)
-    return NextResponse.json(
-      { error: 'Internal server error' }, 
-      { status: 500 }
-    )
+    console.error('❌ Error:', error)
+    return NextResponse.json({
+      error: 'Internal server error',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 })
   }
 }
