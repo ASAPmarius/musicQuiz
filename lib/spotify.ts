@@ -103,6 +103,32 @@ class SpotifyService {
     }
   }
 
+  async getAlbumTracks(albumId: string, accessToken: string, limit = 50, offset = 0) {
+  try {
+    const data = await this.makeRequest(
+      `/albums/${albumId}/tracks?limit=${limit}&offset=${offset}`,
+      accessToken
+    );
+    return data;
+  } catch (error) {
+    console.error('Error fetching album tracks:', error);
+    throw error;
+  }
+}
+
+  async getUserLikedSongs(accessToken: string, limit = 50, offset = 0) {
+  try {
+    const data = await this.makeRequest(
+      `/me/tracks?limit=${limit}&offset=${offset}`,
+      accessToken
+    );
+    return data;
+  } catch (error) {
+    console.error('Error fetching liked songs:', error);
+    throw error;
+  }
+}
+
   // Get current user's profile info
   async getCurrentUser(accessToken: string) {
     try {

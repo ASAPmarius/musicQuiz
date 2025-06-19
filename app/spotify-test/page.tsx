@@ -23,12 +23,33 @@ interface Track {
   duration_ms: number
   hasPreview: boolean
   canPlayWithSDK: boolean
+  track_number?: number
 }
 
 interface DeviceStatus {
   hasDevices: boolean
   hasActiveDevice: boolean
   devices: any[]
+}
+
+interface LikedSong {
+  id: string
+  name: string
+  artists: string
+  album: string
+  preview_url: string | null
+  images: Array<{ url: string }>
+  added_at: string
+}
+
+interface SavedAlbum {
+  id: string
+  name: string
+  artists: string
+  total_tracks: number
+  images: Array<{ url: string }>
+  release_date: string
+  added_at: string
 }
 
 export default function SpotifyTestPage() {
@@ -44,6 +65,12 @@ export default function SpotifyTestPage() {
     devices: [] 
   })
   const [playingTrackId, setPlayingTrackId] = useState<string | null>(null)
+  const [likedSongs, setLikedSongs] = useState<LikedSong[]>([])
+  const [savedAlbums, setSavedAlbums] = useState<SavedAlbum[]>([])
+  const [selectedAlbum, setSelectedAlbum] = useState<SavedAlbum | null>(null)
+  const [albumTracks, setAlbumTracks] = useState<Track[]>([])
+  const [activeTab, setActiveTab] = useState<'playlists' | 'liked' | 'albums'>('playlists')
+  const [loadingProgress, setLoadingProgress] = useState('')
 
   // Helper to get fresh token
   const getAccessToken = useCallback(async () => {
@@ -227,6 +254,127 @@ export default function SpotifyTestPage() {
     }
   }
 
+  // Fetch liked songs
+  const fetchLikedSongs = async () => {
+    setLoading(true)
+    setError('')
+    
+    try {
+      let allSongs: LikedSong[] = []
+      let offset = 0
+      const limit = 50 // Use max limit per request
+      let hasMore = true
+      
+      console.log('🎵 Loading all liked songs...')
+      
+      while (hasMore) {
+        const response = await fetch(`/api/spotify/liked-songs?limit=${limit}&offset=${offset}`)
+        if (!response.ok) {
+          throw new Error('Failed to fetch liked songs')
+        }
+
+        setLoadingProgress(`Loading... ${allSongs.length} songs so far`)
+        const data = await response.json()
+        const newSongs = data.tracks || []
+        
+        allSongs = [...allSongs, ...newSongs]
+        console.log(`📥 Loaded ${newSongs.length} songs (total: ${allSongs.length})`)
+        
+        // Check if there are more pages
+        hasMore = data.has_more && newSongs.length > 0
+        offset += limit
+        
+        // Safety break to avoid infinite loops
+        if (offset > 10000) {
+          console.warn('⚠️ Stopped at 10,000 songs for safety')
+          break
+        }
+      }
+      
+      console.log(`✅ Finished loading ${allSongs.length} liked songs`)
+      setLoadingProgress('')
+      setLikedSongs(allSongs)
+      
+    } catch (err) {
+      console.error('Error fetching liked songs:', err)
+      setError(err instanceof Error ? err.message : 'Failed to fetch liked songs')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Fetch saved albums
+  const fetchSavedAlbums = async () => {
+    setLoading(true)
+    setError('')
+    
+    try {
+      let allAlbums: SavedAlbum[] = []
+      let offset = 0
+      const limit = 50 // Use max limit per request
+      let hasMore = true
+      console.log('💿 Loading all saved albums...')
+      setLoadingProgress(`Loading... ${allAlbums.length} albums so far`)
+
+      while (hasMore) {
+        const response = await fetch(`/api/spotify/saved-albums?limit=${limit}&offset=${offset}`)
+        if (!response.ok) {
+          throw new Error('Failed to fetch saved albums')
+        }
+
+        setLoadingProgress(`Loading... ${allAlbums.length} albums so far`)
+        const data = await response.json()
+        const newAlbums = data.albums || []
+        
+        allAlbums = [...allAlbums, ...newAlbums]
+        console.log(`📥 Loaded ${newAlbums.length} albums (total: ${allAlbums.length})`)
+        
+        // Check if there are more pages
+        hasMore = data.has_more && newAlbums.length > 0
+        offset += limit
+        
+        // Safety break to avoid infinite loops
+        if (offset > 2000) {
+          console.warn('⚠️ Stopped at 2,000 albums for safety')
+          break
+        }
+      }
+      
+      console.log(`✅ Finished loading ${allAlbums.length} saved albums`)
+      setLoadingProgress('')
+      setSavedAlbums(allAlbums)
+      
+    } catch (err) {
+      console.error('Error fetching saved albums:', err)
+      setError(err instanceof Error ? err.message : 'Failed to fetch saved albums')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Fetch tracks from selected album
+  const fetchAlbumTracks = async (albumId: string) => {
+    setLoading(true)
+    setError('')
+    
+    try {
+      const response = await fetch(`/api/spotify/album/${albumId}/tracks`)
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch album tracks: ${response.status}`)
+      }
+      
+      const data = await response.json()
+      setAlbumTracks(data.tracks || [])
+      
+    } catch (err) {
+      console.error('Error fetching album tracks:', err)
+      setError(err instanceof Error ? err.message : 'Failed to fetch album tracks')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const formatDuration = (ms: number) => {
     const seconds = Math.floor((ms / 1000) % 60)
     const minutes = Math.floor((ms / (1000 * 60)) % 60)
@@ -330,110 +478,230 @@ export default function SpotifyTestPage() {
           </div>
         )}
 
+        {/* Tab Navigation */}
+        <div className="mb-6">
+          <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+            {[
+              { key: 'playlists', label: '🎵 Playlists', action: fetchPlaylists },
+              { key: 'liked', label: '❤️ Liked Songs', action: fetchLikedSongs },
+              { key: 'albums', label: '💿 Saved Albums', action: fetchSavedAlbums }
+            ].map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  setActiveTab(tab.key as any)
+                  tab.action()
+                }}
+                className={`px-4 py-2 rounded-md transition-colors ${
+                  activeTab === tab.key
+                    ? 'bg-white shadow text-blue-600'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Spotify Web Player Component */}
         <SpotifyWebPlayer />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Playlists Section */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-bold text-gray-800">Your Playlists</h2>
-              <button 
-                onClick={fetchPlaylists}
-                disabled={loading}
-                className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-300"
-              >
-                {loading ? 'Loading...' : 'Refresh'}
-              </button>
-            </div>
-
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {playlists.map((playlist) => (
-                <div
-                  key={playlist.id}
-                  onClick={() => {
-                    setSelectedPlaylist(playlist)
-                    fetchTracks(playlist.id)
-                  }}
-                  className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                    selectedPlaylist?.id === playlist.id
-                      ? 'bg-green-100 border border-green-300'
-                      : 'bg-gray-50 hover:bg-gray-100'
-                  }`}
-                >
-                  <div className="flex items-center space-x-3">
-                    {playlist.images[0] && (
-                      <img
-                        src={playlist.images[0].url}
-                        alt={playlist.name}
-                        className="w-12 h-12 rounded-lg"
-                      />
-                    )}
-                    <div className="flex-1">
-                      <h3 className="font-semibold text-gray-800">{playlist.name}</h3>
-                      <p className="text-sm text-gray-600">{playlist.tracks.total} tracks</p>
-                      <p className="text-xs text-gray-500">by {playlist.owner}</p>
-                    </div>
-                  </div>
+         {/* Content based on active tab */}
+          {activeTab === 'playlists' && (
+            <>
+              {/* Playlists Section */}
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold text-gray-800">🎵 Your Playlists</h2>
+                  <button 
+                    onClick={fetchPlaylists}
+                    disabled={loading}
+                    className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-300"
+                  >
+                    {loading ? 'Loading...' : 'Refresh'}
+                  </button>
                 </div>
-              ))}
-              
-              {playlists.length === 0 && !loading && (
-                <p className="text-gray-500 text-center py-4">
-                  No playlists found. Click "Refresh" to load your playlists.
-                </p>
+
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {playlists.map((playlist) => (
+                    <div
+                      key={playlist.id}
+                      onClick={() => {
+                        setSelectedPlaylist(playlist)
+                        fetchTracks(playlist.id)
+                      }}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedPlaylist?.id === playlist.id
+                          ? 'bg-green-100 border border-green-300'
+                          : 'bg-gray-50 hover:bg-gray-100'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3">
+                        {playlist.images[0] && (
+                          <img
+                            src={playlist.images[0].url}
+                            alt={playlist.name}
+                            className="w-12 h-12 rounded-lg"
+                          />
+                        )}
+                        <div className="flex-1">
+                          <h3 className="font-semibold text-gray-800">{playlist.name}</h3>
+                          <p className="text-sm text-gray-600">{playlist.tracks.total} tracks</p>
+                          <p className="text-xs text-gray-500">by {playlist.owner}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {playlists.length === 0 && !loading && (
+                    <p className="text-gray-500 text-center py-4">
+                      No playlists found. Click "Refresh" to load your playlists.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Tracks Section for Playlists */}
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <h2 className="text-xl font-bold text-gray-800 mb-4">
+                  {selectedPlaylist ? `🎵 Tracks from "${selectedPlaylist.name}"` : 'Select a Playlist'}
+                </h2>
+
+                {selectedPlaylist ? (
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {tracks.map((track) => (
+                      <div
+                        key={track.id}
+                        className={`p-3 rounded-lg transition-colors ${
+                          playingTrackId === track.id 
+                            ? 'bg-green-50 border border-green-200' 
+                            : 'bg-gray-50 hover:bg-gray-100'
+                        }`}
+                      >
+                        <div className="flex justify-between items-center">
+                          <div className="flex-1">
+                            <h4 className="font-semibold text-gray-800">{track.name}</h4>
+                            <p className="text-sm text-gray-600">{track.artists}</p>
+                            <div className="flex items-center space-x-2 text-xs text-gray-500">
+                              <span>{track.album}</span>
+                              <span>•</span>
+                              <span>{formatDuration(track.duration_ms)}</span>
+                            </div>
+                          </div>
+                          <div className="flex space-x-2">
+                            <button
+                              onClick={() => playTrack(track.uri, track.id)}
+                              disabled={!deviceStatus.hasDevices}
+                              className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                                deviceStatus.hasDevices
+                                  ? 'bg-green-500 hover:bg-green-600 text-white'
+                                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                              }`}
+                            >
+                              {playingTrackId === track.id ? '⏸️' : '▶️'} Play
+                            </button>
+                            
+                            {track.hasPreview && (
+                              <button
+                                onClick={() => playPreview(track)}
+                                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-medium transition-colors text-sm"
+                              >
+                                🎵 Preview
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    
+                    {tracks.length === 0 && !loading && (
+                      <p className="text-gray-500 text-center py-8">
+                        No tracks in this playlist
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-center py-8">
+                    Select a playlist to view tracks
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+
+          {activeTab === 'liked' && (
+            <div className="bg-white rounded-xl shadow-lg p-6 lg:col-span-2">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-bold text-gray-800">❤️ Your Liked Songs ({likedSongs.length})</h2>
+                <button 
+                  onClick={fetchLikedSongs}
+                  disabled={loading}
+                  className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:bg-gray-300"
+                >
+                  {loading ? 'Loading...' : 'Refresh'}
+                </button>
+              </div>
+
+              {loading && loadingProgress && (
+                <div className="mb-4 p-3 bg-blue-50 rounded-lg">
+                  <p className="text-sm text-blue-700">📥 {loadingProgress}</p>
+                </div>
               )}
-            </div>
-          </div>
 
-          {/* Tracks Section */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">
-              {selectedPlaylist ? `Tracks from "${selectedPlaylist.name}"` : 'Select a Playlist'}
-            </h2>
-
-            {selectedPlaylist ? (
               <div className="space-y-2 max-h-96 overflow-y-auto">
-                {tracks.map((track) => (
+                {likedSongs.map((song) => (
                   <div
-                    key={track.id}
+                    key={song.id}
                     className={`p-3 rounded-lg transition-colors ${
-                      playingTrackId === track.id 
-                        ? 'bg-green-50 border border-green-200' 
+                      playingTrackId === song.id 
+                        ? 'bg-red-50 border border-red-200' 
                         : 'bg-gray-50 hover:bg-gray-100'
                     }`}
                   >
                     <div className="flex justify-between items-center">
-                      <div className="flex-1">
-                        <h4 className="font-semibold text-gray-800">{track.name}</h4>
-                        <p className="text-sm text-gray-600">{track.artists}</p>
-                        <div className="flex items-center space-x-2 text-xs text-gray-500">
-                          <span>{track.album}</span>
-                          <span>•</span>
-                          <span>{formatDuration(track.duration_ms)}</span>
+                      <div className="flex items-center space-x-3 flex-1">
+                        {song.images[0] && (
+                          <img 
+                            src={song.images[0].url} 
+                            alt={song.album}
+                            className="w-12 h-12 rounded object-cover"
+                          />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-semibold text-gray-800 truncate">{song.name}</h4>
+                          <p className="text-sm text-gray-600 truncate">{song.artists}</p>
+                          <div className="flex items-center space-x-2 text-xs text-gray-500">
+                            <span className="truncate">{song.album}</span>
+                            <span>•</span>
+                            <span>❤️ {new Date(song.added_at).toLocaleDateString()}</span>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex space-x-2">
-                        {/* Main Play Button - Uses Spotify Device */}
+                      <div className="flex space-x-2 ml-4">
                         <button
-                          onClick={() => playTrack(track.uri, track.id)}
+                          onClick={() => playTrack(`spotify:track:${song.id}`, song.id)}
                           disabled={!deviceStatus.hasDevices}
                           className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
                             deviceStatus.hasDevices
-                              ? 'bg-green-500 hover:bg-green-600 text-white'
+                              ? 'bg-red-500 hover:bg-red-600 text-white'
                               : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                           }`}
-                          title={deviceStatus.hasDevices ? 'Play on Spotify device' : 'No Spotify device available'}
                         >
-                          {playingTrackId === track.id ? '⏸️' : '▶️'} Play
+                          {playingTrackId === song.id ? '⏸️' : '▶️'} Play
                         </button>
                         
-                        {/* Preview Button - 30 second preview */}
-                        {track.hasPreview && (
+                        {song.preview_url && (
                           <button
-                            onClick={() => playPreview(track)}
+                            onClick={() => playPreview({ 
+                              ...song, 
+                              uri: `spotify:track:${song.id}`,
+                              duration_ms: 30000,
+                              hasPreview: true,
+                              canPlayWithSDK: true
+                            })}
                             className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-medium transition-colors text-sm"
-                            title="Play 30s preview in browser"
                           >
                             🎵 Preview
                           </button>
@@ -443,18 +711,151 @@ export default function SpotifyTestPage() {
                   </div>
                 ))}
                 
-                {tracks.length === 0 && !loading && (
+                {likedSongs.length === 0 && !loading && (
                   <p className="text-gray-500 text-center py-8">
-                    No tracks in this playlist
+                    No liked songs found. Go like some songs on Spotify! ❤️
                   </p>
                 )}
               </div>
-            ) : (
-              <p className="text-gray-500 text-center py-8">
-                Select a playlist to view tracks
-              </p>
-            )}
-          </div>
+            </div>
+          )}
+
+          {activeTab === 'albums' && (
+            <>
+              {/* Saved Albums Section */}
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold text-gray-800">💿 Saved Albums</h2>
+                  <button 
+                    onClick={fetchSavedAlbums}
+                    disabled={loading}
+                    className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:bg-gray-300"
+                  >
+                    {loading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {loading && loadingProgress && (
+                  <div className="mb-4 p-3 bg-blue-50 rounded-lg">
+                    <p className="text-sm text-blue-700">📥 {loadingProgress}</p>
+                  </div>
+                )}
+
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {savedAlbums.map((album) => (
+                    <div
+                      key={album.id}
+                      onClick={() => {
+                        setSelectedAlbum(album)
+                        fetchAlbumTracks(album.id)
+                      }}
+                      className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                        selectedAlbum?.id === album.id
+                          ? 'bg-purple-100 border border-purple-300'
+                          : 'bg-gray-50 hover:bg-gray-100'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3">
+                        {album.images[0] && (
+                          <img
+                            src={album.images[0].url}
+                            alt={album.name}
+                            className="w-12 h-12 rounded-lg"
+                          />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-semibold text-gray-800 truncate">{album.name}</h3>
+                          <p className="text-sm text-gray-600 truncate">{album.artists}</p>
+                          <div className="flex items-center space-x-2 text-xs text-gray-500">
+                            <span>{album.total_tracks} tracks</span>
+                            <span>•</span>
+                            <span>{album.release_date}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {savedAlbums.length === 0 && !loading && (
+                    <p className="text-gray-500 text-center py-4">
+                      No saved albums found. Save some albums on Spotify! 💿
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Album Tracks Section */}
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <h2 className="text-xl font-bold text-gray-800 mb-4">
+                  {selectedAlbum ? `💿 Tracks from "${selectedAlbum.name}"` : 'Select an Album'}
+                </h2>
+
+                {selectedAlbum ? (
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {albumTracks.map((track) => (
+                      <div
+                        key={track.id}
+                        className={`p-3 rounded-lg transition-colors ${
+                          playingTrackId === track.id 
+                            ? 'bg-purple-50 border border-purple-200' 
+                            : 'bg-gray-50 hover:bg-gray-100'
+                        }`}
+                      >
+                        <div className="flex justify-between items-center">
+                          <div className="flex-1">
+                            <div className="flex items-center space-x-2">
+                              <span className="text-xs text-gray-400 w-6">
+                                {track.track_number || '•'}
+                              </span>
+                              <div className="flex-1">
+                                <h4 className="font-semibold text-gray-800">{track.name}</h4>
+                                <p className="text-sm text-gray-600">{track.artists}</p>
+                                <div className="flex items-center space-x-2 text-xs text-gray-500">
+                                  <span>{formatDuration(track.duration_ms)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex space-x-2">
+                            <button
+                              onClick={() => playTrack(track.uri, track.id)}
+                              disabled={!deviceStatus.hasDevices}
+                              className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
+                                deviceStatus.hasDevices
+                                  ? 'bg-purple-500 hover:bg-purple-600 text-white'
+                                  : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                              }`}
+                            >
+                              {playingTrackId === track.id ? '⏸️' : '▶️'} Play
+                            </button>
+                            
+                            {track.hasPreview && (
+                              <button
+                                onClick={() => playPreview(track)}
+                                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-medium transition-colors text-sm"
+                              >
+                                🎵 Preview
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    
+                    {albumTracks.length === 0 && !loading && (
+                      <p className="text-gray-500 text-center py-8">
+                        No tracks in this album
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-center py-8">
+                    Select an album to view tracks
+                  </p>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
