@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useSession, signIn } from 'next-auth/react'
-import SpotifyWebPlayer from '@/components/SpotifyWebPlayer' // Adjust path as needed
+import SpotifyWebPlayer from '@/components/SpotifyWebPlayer'
 
 interface Playlist {
   id: string
@@ -17,12 +17,18 @@ interface Track {
   id: string
   name: string
   artists: string
-  uri: string // Spotify URI for Web Playback SDK
+  uri: string
   preview_url: string | null
   album: string
   duration_ms: number
-  hasPreview: boolean // ✅ New field
-  canPlayWithSDK: boolean // ✅ New field
+  hasPreview: boolean
+  canPlayWithSDK: boolean
+}
+
+interface DeviceStatus {
+  hasDevices: boolean
+  hasActiveDevice: boolean
+  devices: any[]
 }
 
 export default function SpotifyTestPage() {
@@ -32,11 +38,150 @@ export default function SpotifyTestPage() {
   const [tracks, setTracks] = useState<Track[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  
-  // 🆕 State for Web Player
-  const [selectedTrackUri, setSelectedTrackUri] = useState<string>('')
-  const [playerDeviceId, setPlayerDeviceId] = useState<string>('')
-  const [playerReady, setPlayerReady] = useState(false)
+  const [deviceStatus, setDeviceStatus] = useState<DeviceStatus>({ 
+    hasDevices: false, 
+    hasActiveDevice: false, 
+    devices: [] 
+  })
+  const [playingTrackId, setPlayingTrackId] = useState<string | null>(null)
+
+  // Helper to get fresh token
+  const getAccessToken = useCallback(async () => {
+    const response = await fetch('/api/auth/session')
+    const sessionData = await response.json()
+    return sessionData?.accessToken
+  }, [])
+
+  // Check device status
+  const checkDeviceStatus = useCallback(async () => {
+    try {
+      const token = await getAccessToken()
+      const response = await fetch('https://api.spotify.com/v1/me/player/devices', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        const hasActiveDevice = data.devices.some((d: any) => d.is_active)
+        
+        setDeviceStatus({ 
+          hasDevices: data.devices.length > 0, 
+          hasActiveDevice,
+          devices: data.devices
+        })
+        
+        return { 
+          hasDevices: data.devices.length > 0, 
+          hasActiveDevice,
+          devices: data.devices
+        }
+      }
+    } catch (error) {
+      console.error('Failed to check device status:', error)
+    }
+    return { hasDevices: false, hasActiveDevice: false, devices: [] }
+  }, [getAccessToken])
+
+  // Play a track using Web API
+  const playTrack = useCallback(async (trackUri: string, trackId: string) => {
+    try {
+      setError('')
+      setPlayingTrackId(trackId)
+      
+      const token = await getAccessToken()
+      
+      // First check if we have any devices
+      const status = await checkDeviceStatus()
+      
+      if (!status.hasDevices) {
+        setError('No Spotify devices found. Please open Spotify on your phone, desktop, or web player.')
+        setPlayingTrackId(null)
+        return
+      }
+      
+      // Try to play on the active device (or first available)
+      const playResponse = await fetch('https://api.spotify.com/v1/me/player/play', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          uris: [trackUri]
+        })
+      })
+
+      if (playResponse.status === 404) {
+        // No active device, try to transfer to first available
+        if (status.devices.length > 0) {
+          const firstDevice = status.devices[0]
+          
+          // Transfer playback
+          await fetch('https://api.spotify.com/v1/me/player', {
+            method: 'PUT',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              device_ids: [firstDevice.id],
+              play: false
+            })
+          })
+          
+          // Wait a moment for transfer
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          
+          // Try playing again
+          const retryResponse = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${firstDevice.id}`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              uris: [trackUri]
+            })
+          })
+          
+          if (!retryResponse.ok && retryResponse.status !== 204) {
+            throw new Error('Failed to play after device transfer')
+          }
+        } else {
+          setError('No active Spotify device. Please open Spotify first.')
+          setPlayingTrackId(null)
+          return
+        }
+      } else if (!playResponse.ok && playResponse.status !== 204) {
+        throw new Error(`Failed to play track: ${playResponse.status}`)
+      }
+
+      console.log('✅ Playing track:', trackUri)
+      
+      // Update device status after successful play
+      setTimeout(checkDeviceStatus, 1000)
+      
+    } catch (error) {
+      console.error('Failed to play track:', error)
+      setError(error instanceof Error ? error.message : 'Failed to play track')
+      setPlayingTrackId(null)
+    }
+  }, [getAccessToken, checkDeviceStatus])
+
+  // Play preview (30 seconds)
+  const playPreview = useCallback((track: Track) => {
+    if (!track.preview_url) {
+      setError('No preview available for this track.')
+      return
+    }
+    
+    console.log('🎵 Playing preview:', track.name)
+    const audio = new Audio(track.preview_url)
+    audio.play().catch(err => {
+      console.error('Preview playback failed:', err)
+      setError('Failed to play preview')
+    })
+  }, [])
 
   // Fetch user's playlists
   const fetchPlaylists = async () => {
@@ -65,29 +210,14 @@ export default function SpotifyTestPage() {
     setError('')
     
     try {
-      console.log('🔍 Fetching tracks for playlist:', playlistId)
       const response = await fetch(`/api/spotify/playlist/${playlistId}/tracks`)
       
-      console.log('📋 Response status:', response.status)
-      
       if (!response.ok) {
-        const errorData = await response.text()
-        console.error('❌ API Error:', response.status, errorData)
         throw new Error(`Failed to fetch tracks: ${response.status}`)
       }
       
       const data = await response.json()
-      console.log('✅ Tracks data received:', {
-        totalTracks: data.tracks?.length || 0,
-        metadata: data.metadata
-      })
-      
       setTracks(data.tracks || [])
-      
-      // Show metadata in console for debugging
-      if (data.metadata) {
-        console.log('📊 Track metadata:', data.metadata)
-      }
       
     } catch (err) {
       console.error('Error fetching tracks:', err)
@@ -97,51 +227,23 @@ export default function SpotifyTestPage() {
     }
   }
 
-  // Load playlists when component mounts
-  useEffect(() => {
-    if (session?.accessToken) {
-      fetchPlaylists()
-    }
-  }, [session])
-
-  // 🆕 Play track using Web Playback SDK
-  const playTrackFull = (track: Track) => {
-    if (!playerReady) {
-      setError('Player not ready. Please wait for the Spotify player to connect.')
-      return
-    }
-    
-    console.log('🎵 Playing full track:', track.name, 'URI:', track.uri)
-    setSelectedTrackUri(track.uri)
-  }
-
-  // 🔄 Play preview (fallback for tracks without Web Playback)
-  const playPreview = (track: Track) => {
-    if (!track.preview_url) {
-      setError('No preview available for this track. Use "Play Full" instead.')
-      return
-    }
-    
-    console.log('🎵 Playing preview:', track.name)
-    const audio = new Audio(track.preview_url)
-    audio.play().catch(err => {
-      console.error('Preview playback failed:', err)
-      setError('Failed to play preview')
-    })
-  }
-
-  // 🆕 Callback when player is ready
-  const handlePlayerReady = (deviceId: string) => {
-    console.log('🎵 Player ready with device ID:', deviceId)
-    setPlayerDeviceId(deviceId)
-    setPlayerReady(true)
-  }
-
   const formatDuration = (ms: number) => {
     const seconds = Math.floor((ms / 1000) % 60)
     const minutes = Math.floor((ms / (1000 * 60)) % 60)
     return `${minutes}:${seconds.toString().padStart(2, '0')}`
   }
+
+  // Load playlists and check devices when component mounts
+  useEffect(() => {
+    if (session?.accessToken) {
+      fetchPlaylists()
+      checkDeviceStatus()
+      
+      // Poll device status every 10 seconds
+      const interval = setInterval(checkDeviceStatus, 10000)
+      return () => clearInterval(interval)
+    }
+  }, [session, checkDeviceStatus])
 
   if (status === "loading") {
     return (
@@ -155,18 +257,13 @@ export default function SpotifyTestPage() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 to-green-100 flex items-center justify-center">
         <div className="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center">
-          <h1 className="text-2xl font-bold mb-4 text-gray-800">🎵 Spotify Web Player Test</h1>
+          <h1 className="text-2xl font-bold mb-4 text-gray-800">🎵 Spotify Music Player</h1>
           <p className="text-gray-600 mb-6">
-            Sign in with Spotify to test full track playback with the Web Playback SDK
+            Sign in with Spotify to play your music
           </p>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-            <p className="text-sm text-blue-700">
-              <strong>Note:</strong> Full track playback requires Spotify Premium.
-            </p>
-          </div>
-          <button
+          <button 
             onClick={() => signIn('spotify')}
-            className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-colors w-full"
+            className="bg-green-500 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-600 transition-colors"
           >
             Sign in with Spotify
           </button>
@@ -176,50 +273,75 @@ export default function SpotifyTestPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-50 to-green-100 p-6">
-      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-green-100 p-4">
+      <div className="max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-800">🎵 Spotify Web Player Test</h1>
-              <p className="text-gray-600">Testing full track playback with Web Playback SDK</p>
-            </div>
-            <div className="text-right">
-              <p className="text-sm text-gray-600">Welcome, {session.user?.name}</p>
-              <div className={`text-xs px-2 py-1 rounded-full ${
-                playerReady ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
-              }`}>
-                Player: {playerReady ? 'Ready' : 'Connecting...'}
-              </div>
+        <div className="bg-white rounded-xl shadow-lg p-6">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2">🎵 Spotify Music Player</h1>
+          <p className="text-gray-600">Welcome, {(session as any)?.user?.name || 'User'}!</p>
+        </div>
+
+        {/* Device Status Alert */}
+        {!deviceStatus.hasActiveDevice && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <h3 className="font-bold text-yellow-800 mb-2">⚠️ No Active Spotify Device</h3>
+            <p className="text-yellow-700 mb-3">
+              To play music, you need to have Spotify open on one of your devices:
+            </p>
+            <ul className="text-sm text-yellow-700 space-y-1 mb-3">
+              <li>• Spotify desktop app</li>
+              <li>• Spotify mobile app</li>
+              <li>• Spotify web player (open.spotify.com)</li>
+            </ul>
+            <button 
+              onClick={checkDeviceStatus}
+              className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700"
+            >
+              🔄 Check Again
+            </button>
+          </div>
+        )}
+
+        {/* Available Devices */}
+        {deviceStatus.devices.length > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h3 className="font-bold text-blue-800 mb-2">📱 Available Devices</h3>
+            <div className="space-y-2">
+              {deviceStatus.devices.map((device: any) => (
+                <div key={device.id} className="flex items-center justify-between">
+                  <span className="text-blue-700">
+                    {device.name} ({device.type})
+                  </span>
+                  {device.is_active && (
+                    <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-sm">
+                      Active
+                    </span>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
-        </div>
+        )}
 
         {/* Error Display */}
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
             <p className="text-red-700">❌ {error}</p>
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* 🆕 Spotify Web Player */}
-          <div className="lg:col-span-2">
-            <SpotifyWebPlayer 
-              trackUri={selectedTrackUri}
-              onPlayerReady={handlePlayerReady}
-            />
-          </div>
+        {/* Spotify Web Player Component */}
+        <SpotifyWebPlayer />
 
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Playlists Section */}
           <div className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-bold text-gray-800">Your Playlists</h2>
-              <button
+              <button 
                 onClick={fetchPlaylists}
                 disabled={loading}
-                className="bg-green-500 hover:bg-green-600 disabled:bg-gray-400 text-white px-4 py-2 rounded-lg transition-colors text-sm"
+                className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-300"
               >
                 {loading ? 'Loading...' : 'Refresh'}
               </button>
@@ -275,7 +397,11 @@ export default function SpotifyTestPage() {
                 {tracks.map((track) => (
                   <div
                     key={track.id}
-                    className="p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                    className={`p-3 rounded-lg transition-colors ${
+                      playingTrackId === track.id 
+                        ? 'bg-green-50 border border-green-200' 
+                        : 'bg-gray-50 hover:bg-gray-100'
+                    }`}
                   >
                     <div className="flex justify-between items-center">
                       <div className="flex-1">
@@ -285,42 +411,31 @@ export default function SpotifyTestPage() {
                           <span>{track.album}</span>
                           <span>•</span>
                           <span>{formatDuration(track.duration_ms)}</span>
-                          {!track.hasPreview && (
-                            <>
-                              <span>•</span>
-                              <span className="text-blue-600">SDK only</span>
-                            </>
-                          )}
                         </div>
                       </div>
                       <div className="flex space-x-2">
-                        {/* 🆕 Full Track Playback Button */}
+                        {/* Main Play Button - Uses Spotify Device */}
                         <button
-                          onClick={() => playTrackFull(track)}
-                          disabled={!playerReady}
+                          onClick={() => playTrack(track.uri, track.id)}
+                          disabled={!deviceStatus.hasDevices}
                           className={`px-3 py-2 rounded-lg font-medium transition-colors text-sm ${
-                            playerReady
+                            deviceStatus.hasDevices
                               ? 'bg-green-500 hover:bg-green-600 text-white'
                               : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                           }`}
+                          title={deviceStatus.hasDevices ? 'Play on Spotify device' : 'No Spotify device available'}
                         >
-                          🎵 Play Full
+                          {playingTrackId === track.id ? '⏸️' : '▶️'} Play
                         </button>
                         
-                        {/* 🔄 Keep preview as fallback */}
-                        {track.hasPreview ? (
+                        {/* Preview Button - 30 second preview */}
+                        {track.hasPreview && (
                           <button
                             onClick={() => playPreview(track)}
-                            className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm transition-colors"
+                            className="px-3 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-medium transition-colors text-sm"
+                            title="Play 30s preview in browser"
                           >
-                            ▶️ Preview
-                          </button>
-                        ) : (
-                          <button
-                            disabled
-                            className="px-3 py-2 bg-gray-100 text-gray-400 rounded-lg text-sm cursor-not-allowed"
-                          >
-                            No Preview
+                            🎵 Preview
                           </button>
                         )}
                       </div>
@@ -329,8 +444,8 @@ export default function SpotifyTestPage() {
                 ))}
                 
                 {tracks.length === 0 && !loading && (
-                  <p className="text-gray-500 text-center py-4">
-                    No tracks found in this playlist
+                  <p className="text-gray-500 text-center py-8">
+                    No tracks in this playlist
                   </p>
                 )}
               </div>
@@ -341,18 +456,6 @@ export default function SpotifyTestPage() {
             )}
           </div>
         </div>
-
-        {/* Loading Indicator */}
-        {loading && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-            <div className="bg-white p-6 rounded-lg">
-              <div className="flex items-center space-x-3">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500"></div>
-                <span>Loading...</span>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

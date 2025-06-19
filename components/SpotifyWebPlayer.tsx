@@ -1,534 +1,402 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useSession, signOut } from 'next-auth/react'
-
-declare global {
-  interface Window {
-    onSpotifyWebPlaybackSDKReady: () => void;
-    Spotify: {
-      Player: new (options: any) => any;
-    };
-  }
-}
+import { useEffect, useState, useCallback } from 'react'
+import { useSession } from 'next-auth/react'
 
 interface SpotifyWebPlayerProps {
   trackUri?: string
   onPlayerReady?: (deviceId: string) => void
 }
 
-export default function EnhancedSpotifyPlayer({ trackUri, onPlayerReady }: SpotifyWebPlayerProps) {
+interface SpotifyDevice {
+  id: string
+  is_active: boolean
+  is_private_session: boolean
+  is_restricted: boolean
+  name: string
+  type: string
+  volume_percent: number
+  supports_volume: boolean
+}
+
+interface PlaybackState {
+  device: SpotifyDevice
+  shuffle_state: boolean
+  repeat_state: string
+  timestamp: number
+  progress_ms: number
+  is_playing: boolean
+  item: {
+    name: string
+    artists: Array<{ name: string }>
+    duration_ms: number
+    uri: string
+  }
+}
+
+export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWebPlayerProps) {
   const { data: session } = useSession()
-  const [player, setPlayer] = useState<any>(null)
-  const [deviceId, setDeviceId] = useState<string>('')
-  const [playerState, setPlayerState] = useState<any>(null)
+  const [devices, setDevices] = useState<SpotifyDevice[]>([])
+  const [activeDevice, setActiveDevice] = useState<SpotifyDevice | null>(null)
+  const [playbackState, setPlaybackState] = useState<PlaybackState | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [isReady, setIsReady] = useState(false)
   const [error, setError] = useState<string>('')
-  const [currentPosition, setCurrentPosition] = useState(0)
-  const [deviceFullyReady, setDeviceFullyReady] = useState(false)
-  const [isActiveDevice, setIsActiveDevice] = useState(false) // 🆕 Track if we're the active device
-  const [transferringPlayback, setTransferringPlayback] = useState(false) // 🆕 Track transfer state
+  const [transferringPlayback, setTransferringPlayback] = useState(false)
 
-  // Enhanced validation
-  const validateToken = () => {
-    if (!session?.accessToken) {
-      return { valid: false, reason: 'No access token' }
-    }
-
-    const sessionData = session as any
-    const requiredScopes = ['streaming', 'user-modify-playback-state', 'user-read-playback-state']
-    const sessionScopes = sessionData?.scope || ''
-    const hasRequiredScopes = requiredScopes.every(scope => sessionScopes.includes(scope))
-    const tokenExpired = sessionData.expiresAt && sessionData.expiresAt < Date.now() / 1000
-
-    if (!hasRequiredScopes) {
-      return { 
-        valid: false, 
-        reason: `Missing scopes: ${requiredScopes.filter(s => !sessionScopes.includes(s)).join(', ')}` 
+  // Helper to make Spotify API calls
+  const spotifyFetch = useCallback(async (endpoint: string, options: RequestInit = {}) => {
+    if (!session?.accessToken) throw new Error('No access token')
+    
+    const response = await fetch(`https://api.spotify.com/v1${endpoint}`, {
+      ...options,
+      headers: {
+        'Authorization': `Bearer ${(session as any).accessToken}`,
+        'Content-Type': 'application/json',
+        ...options.headers
       }
+    })
+
+    // Check for empty responses FIRST
+    if (response.status === 204 || response.headers.get('content-length') === '0') {
+      return null
     }
 
-    if (tokenExpired) {
-      return { valid: false, reason: 'Token expired' }
-    }
-
-    return { valid: true }
-  }
-
-  // 🆕 Check if this device is the active device
-  const checkActiveDevice = async () => {
-    if (!session?.accessToken || !deviceId) return false
-
+    // Only try to parse JSON if we have content
+    let data = null
     try {
-      const response = await fetch('https://api.spotify.com/v1/me/player', {
-        headers: { 'Authorization': `Bearer ${(session as any).accessToken}` }
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const isActive = data?.device?.id === deviceId
-        setIsActiveDevice(isActive)
-        console.log('🎯 Active device check:', { 
-          ourDevice: deviceId, 
-          activeDevice: data?.device?.id, 
-          isActive 
-        })
-        return isActive
-      }
-    } catch (error) {
-      console.error('❌ Error checking active device:', error)
+      data = await response.json()
+    } catch (e) {
+      // If JSON parsing fails on a successful response, just return null
+      if (response.ok) return null
+      // Otherwise throw an error
+      throw new Error(`API Error: ${response.status}`)
     }
-    return false
-  }
+    
+    if (!response.ok) {
+      const errorMessage = data?.error?.message || `API Error: ${response.status}`
+      throw new Error(errorMessage)
+    }
+    
+    return data
+  }, [session])
 
-  // 🆕 Transfer playback to this device
-  const transferPlaybackToThisDevice = async () => {
-    if (!session?.accessToken || !deviceId || transferringPlayback) return false
+  // Fetch available devices
+  const fetchDevices = useCallback(async () => {
+    try {
+      const data = await spotifyFetch('/me/player/devices')
+      const deviceList = data?.devices || []
+      setDevices(deviceList)
+      
+      // Find active device
+      const active = deviceList.find((d: SpotifyDevice) => d.is_active)
+      setActiveDevice(active || null)
+      
+      // If we have devices but none are active, notify parent
+      if (deviceList.length > 0 && !active && onPlayerReady) {
+        onPlayerReady(deviceList[0].id)
+      }
+      
+      return deviceList
+    } catch (error) {
+      console.error('Failed to fetch devices:', error)
+      setError('Failed to fetch devices')
+      return []
+    }
+  }, [spotifyFetch, onPlayerReady])
 
+  // Fetch current playback state
+  const fetchPlaybackState = useCallback(async () => {
+    try {
+      const state = await spotifyFetch('/me/player')
+      setPlaybackState(state)
+      
+      if (state?.device) {
+        setActiveDevice(state.device)
+      }
+      
+      return state
+    } catch (error) {
+      // No active playback is not an error
+      if (error instanceof Error && error.message.includes('204')) {
+        setPlaybackState(null)
+      }
+      return null
+    }
+  }, [spotifyFetch])
+
+  // Transfer playback to a specific device
+  const transferPlayback = useCallback(async (deviceId: string, play: boolean = false) => {
     setTransferringPlayback(true)
     setError('')
-
+    
     try {
-      console.log('🔄 Transferring playback to web player...')
-      
-      const response = await fetch('https://api.spotify.com/v1/me/player', {
+      await spotifyFetch('/me/player', {
         method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${(session as any).accessToken}`,
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           device_ids: [deviceId],
-          play: false // Don't start playing automatically
+          play
         })
       })
-
-      if (response.ok) {
-        console.log('✅ Playback transferred successfully!')
-        setIsActiveDevice(true)
-        setTransferringPlayback(false)
-        
-        // Check again in a moment to be sure
-        setTimeout(checkActiveDevice, 1000)
-        return true
-      } else {
-        const errorText = await response.text()
-        console.error('❌ Transfer failed:', response.status, errorText)
-        setError(`Transfer failed: ${response.status}`)
-        setTransferringPlayback(false)
-        return false
-      }
+      
+      // Wait a bit for transfer to complete
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      
+      // Refresh devices and state
+      await fetchDevices()
+      await fetchPlaybackState()
+      
+      return true
     } catch (error) {
-      console.error('❌ Error transferring playback:', error)
-      setError('Error transferring playback')
-      setTransferringPlayback(false)
+      console.error('Transfer failed:', error)
+      setError(error instanceof Error ? error.message : 'Failed to transfer playback')
       return false
+    } finally {
+      setTransferringPlayback(false)
     }
-  }
+  }, [spotifyFetch, fetchDevices, fetchPlaybackState])
 
-  useEffect(() => {
-    const validation = validateToken()
-    if (!validation.valid) {
-      setError(validation.reason || 'Token validation failed')
-      setIsLoading(false)
-      return
-    }
-
-    const initializePlayer = () => {
-      if (!window.Spotify) {
-        console.error('❌ Spotify SDK not loaded')
-        return
-      }
-
-      try {
-        console.log('🎵 Creating enhanced Spotify player...')
-        
-        const spotifyPlayer = new window.Spotify.Player({
-          name: 'Enhanced Web Quiz Player',
-          getOAuthToken: (cb: (token: string) => void) => {
-            cb((session as any).accessToken)
-          },
-          volume: 0.5
-        })
-
-        // Enhanced event listeners
-        spotifyPlayer.addListener('ready', ({ device_id }: { device_id: string }) => {
-          console.log('✅ Player ready with device ID:', device_id)
-          setDeviceId(device_id)
-          setIsReady(true)
-          setIsLoading(false)
-          onPlayerReady?.(device_id)
-          
-          // Check if we're active after a short delay
-          setTimeout(() => {
-            checkActiveDevice()
-            setDeviceFullyReady(true)
-          }, 2000)
-        })
-
-        spotifyPlayer.addListener('not_ready', ({ device_id }: { device_id: string }) => {
-          console.log('❌ Device went offline:', device_id)
-          setIsReady(false)
-          setDeviceFullyReady(false)
-          setIsActiveDevice(false)
-        })
-
-        spotifyPlayer.addListener('initialization_error', ({ message }: { message: string }) => {
-          console.error('❌ Initialization error:', message)
-          setError(`Initialization error: ${message}`)
-          setIsLoading(false)
-        })
-
-        spotifyPlayer.addListener('authentication_error', ({ message }: { message: string }) => {
-          console.error('❌ Authentication error:', message)
-          setError(`Authentication error: ${message}`)
-          setIsLoading(false)
-        })
-
-        spotifyPlayer.addListener('account_error', ({ message }: { message: string }) => {
-          console.error('❌ Account error:', message)
-          setError(`Account error: ${message}. You need Spotify Premium.`)
-          setIsLoading(false)
-        })
-
-        spotifyPlayer.addListener('player_state_changed', (state: any) => {
-          console.log('🎵 Player state changed:', state)
-          setPlayerState(state)
-          if (state) {
-            setCurrentPosition(state.position)
-          }
-        })
-
-        console.log('🔗 Connecting enhanced player...')
-        spotifyPlayer.connect().then((success: boolean) => {
-          if (success) {
-            console.log('✅ Successfully connected!')
-            setPlayer(spotifyPlayer)
-          } else {
-            console.error('❌ Failed to connect')
-            setError('Failed to connect to Spotify')
-            setIsLoading(false)
-          }
-        })
-
-      } catch (error) {
-        console.error('❌ Error creating player:', error)
-        setError('Error creating player: ' + (error instanceof Error ? error.message : 'Unknown error'))
-        setIsLoading(false)
-      }
-    }
-
-    // Load SDK if needed
-    if (window.Spotify) {
-      initializePlayer()
-    } else {
-      console.log('📦 Loading Spotify SDK...')
-      const script = document.createElement('script')
-      script.src = 'https://sdk.scdn.co/spotify-player.js'
-      script.async = true
-      script.onload = () => console.log('📦 SDK loaded')
-      script.onerror = () => {
-        setError('Failed to load Spotify SDK')
-        setIsLoading(false)
-      }
-      document.body.appendChild(script)
-
-      window.onSpotifyWebPlaybackSDKReady = initializePlayer
-    }
-
-    return () => {
-      if (player) {
-        console.log('🧹 Cleaning up player...')
-        player.disconnect()
-      }
-    }
-  }, [session?.accessToken])
-
-  // 🎯 ENHANCED: Smart play with device activation
-  const playTrack = async (uri: string) => {
-    if (!deviceId || !session?.accessToken) {
-      setError('Player not ready')
-      return
-    }
-
-    // First, make sure we're the active device
-    if (!isActiveDevice) {
-      console.log('📱 Not active device, transferring playback first...')
-      const transferred = await transferPlaybackToThisDevice()
-      if (!transferred) {
-        setError('Could not activate device for playback')
-        return
-      }
-      // Wait a moment for transfer to complete
-      await new Promise(resolve => setTimeout(resolve, 1500))
-    }
-
+  // Play a specific track
+  const playTrack = useCallback(async (uri: string, deviceId?: string) => {
     try {
-      console.log('🎵 Playing track on active device:', uri)
+      const targetDevice = deviceId || activeDevice?.id
       
-      const response = await fetch('https://api.spotify.com/v1/me/player/play', {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${(session as any).accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          device_id: deviceId,
-          uris: [uri]
-        })
-      })
-
-      if (!response.ok) {
-        const errorData = await response.text()
-        console.error('❌ Play failed:', response.status, errorData)
-        setError(`Play failed: ${response.status}`)
-      } else {
-        console.log('✅ Track playing successfully!')
-        setError('')
-      }
-    } catch (error) {
-      console.error('❌ Error playing track:', error)
-      setError('Error playing track')
-    }
-  }
-
-  // 🎯 ENHANCED: Smart pause/play with proper device handling
-  const smartTogglePlayback = async () => {
-    if (!player || !deviceId) {
-      setError('Player not ready')
-      return
-    }
-
-    // Ensure we're the active device first
-    if (!isActiveDevice) {
-      console.log('📱 Not active device, transferring first...')
-      const transferred = await transferPlaybackToThisDevice()
-      if (!transferred) {
-        setError('Cannot control playback - device transfer failed')
-        return
-      }
-      // Wait for transfer to complete
-      await new Promise(resolve => setTimeout(resolve, 1000))
-    }
-
-    try {
-      console.log('🎵 Attempting toggle on active device...')
-      
-      // Try SDK first
-      await player.togglePlay()
-      console.log('✅ SDK toggle successful!')
-      
-      // Force state refresh
-      setTimeout(() => {
-        if (player.getCurrentState) {
-          player.getCurrentState().then((state: any) => {
-            if (state) {
-              setPlayerState(state)
-              console.log('🔄 State refreshed:', state.paused ? 'Paused' : 'Playing')
-            }
-          })
+      if (!targetDevice) {
+        // No device available, try to get one
+        const deviceList = await fetchDevices()
+        if (deviceList.length === 0) {
+          setError('No Spotify devices found. Please open Spotify on your device.')
+          return
         }
-      }, 500)
-      
-    } catch (sdkError) {
-      console.warn('⚠️ SDK failed, trying Web API...', sdkError)
-      
-      // Web API fallback
-      try {
-        const action = playerState?.paused ? 'play' : 'pause'
-        console.log(`🔄 Web API ${action}...`)
         
-        const response = await fetch(`https://api.spotify.com/v1/me/player/${action}`, {
+        // Transfer to first available device
+        await transferPlayback(deviceList[0].id)
+        
+        // Try playing on the newly activated device
+        await spotifyFetch(`/me/player/play?device_id=${deviceList[0].id}`, {
           method: 'PUT',
-          headers: {
-            'Authorization': `Bearer ${(session as any).accessToken}`,
-          }
+          body: JSON.stringify({ uris: [uri] })
         })
-        
-        if (response.ok) {
-          console.log('✅ Web API fallback worked!')
-        } else {
-          throw new Error(`Web API failed: ${response.status}`)
-        }
-      } catch (apiError) {
-        console.error('❌ Both methods failed:', apiError)
-        setError('Playback control failed')
+      } else {
+        // Play on specific device
+        await spotifyFetch(`/me/player/play${targetDevice ? `?device_id=${targetDevice}` : ''}`, {
+          method: 'PUT',
+          body: JSON.stringify({ uris: [uri] })
+        })
       }
-    }
-  }
-
-  // Enhanced next track
-  const smartNextTrack = async () => {
-    if (!isActiveDevice) {
-      await transferPlaybackToThisDevice()
-      await new Promise(resolve => setTimeout(resolve, 1000))
-    }
-
-    try {
-      await player.nextTrack()
-      console.log('✅ Next track!')
+      
+      // Update state after playing
+      setTimeout(fetchPlaybackState, 500)
     } catch (error) {
-      console.error('❌ Next failed:', error)
-      setError('Next track failed')
+      console.error('Play failed:', error)
+      setError(error instanceof Error ? error.message : 'Failed to play track')
     }
-  }
+  }, [activeDevice, spotifyFetch, fetchDevices, transferPlayback, fetchPlaybackState])
 
-  // Enhanced previous track
-  const smartPreviousTrack = async () => {
-    if (!isActiveDevice) {
-      await transferPlaybackToThisDevice()
-      await new Promise(resolve => setTimeout(resolve, 1000))
-    }
-
+  // Playback controls
+  const togglePlayback = useCallback(async () => {
     try {
-      await player.previousTrack()
-      console.log('✅ Previous track!')
+      if (playbackState?.is_playing) {
+        await spotifyFetch('/me/player/pause', { method: 'PUT' })
+      } else {
+        await spotifyFetch('/me/player/play', { method: 'PUT' })
+      }
+      
+      // Update state
+      setTimeout(fetchPlaybackState, 300)
     } catch (error) {
-      console.error('❌ Previous failed:', error)
-      setError('Previous track failed')
+      setError(error instanceof Error ? error.message : 'Playback control failed')
     }
-  }
+  }, [playbackState, spotifyFetch, fetchPlaybackState])
 
-  // Auto-play with device activation
-  useEffect(() => {
-    if (trackUri && deviceFullyReady && !error) {
-      console.log('🎵 Auto-playing track:', trackUri)
-      setTimeout(() => playTrack(trackUri), 1000)
+  const skipToNext = useCallback(async () => {
+    try {
+      await spotifyFetch('/me/player/next', { method: 'POST' })
+      setTimeout(fetchPlaybackState, 500)
+    } catch (error) {
+      setError('Failed to skip track')
     }
-  }, [trackUri, deviceFullyReady, error])
+  }, [spotifyFetch, fetchPlaybackState])
 
-  // Periodic active device check
-  useEffect(() => {
-    if (deviceId && isReady) {
-      const interval = setInterval(checkActiveDevice, 10000) // Check every 10 seconds
-      return () => clearInterval(interval)
+  const skipToPrevious = useCallback(async () => {
+    try {
+      await spotifyFetch('/me/player/previous', { method: 'POST' })
+      setTimeout(fetchPlaybackState, 500)
+    } catch (error) {
+      setError('Failed to go to previous track')
     }
-  }, [deviceId, isReady])
+  }, [spotifyFetch, fetchPlaybackState])
 
-  const refreshAuth = async () => {
-    await signOut({ redirect: false })
-    window.location.href = '/api/auth/signin/spotify'
-  }
-
+  // Format time helper
   const formatTime = (ms: number) => {
     const seconds = Math.floor((ms / 1000) % 60)
     const minutes = Math.floor((ms / (1000 * 60)) % 60)
     return `${minutes}:${seconds.toString().padStart(2, '0')}`
   }
 
+  // Initial load
+  useEffect(() => {
+    if (!session?.accessToken) {
+      setIsLoading(false)
+      return
+    }
+
+    const initialize = async () => {
+      setIsLoading(true)
+      await fetchDevices()
+      await fetchPlaybackState()
+      setIsLoading(false)
+    }
+
+    initialize()
+
+    // Poll for updates every 5 seconds
+    const interval = setInterval(() => {
+      fetchPlaybackState()
+    }, 5000)
+
+    return () => clearInterval(interval)
+  }, [session, fetchDevices, fetchPlaybackState])
+
+  // Handle trackUri changes
+  useEffect(() => {
+    if (trackUri && activeDevice) {
+      playTrack(trackUri)
+    }
+  }, [trackUri, activeDevice, playTrack])
+
+  // UI
   return (
     <div className="bg-white rounded-lg shadow-lg p-6">
-      <h3 className="text-xl font-bold mb-4">🎵 Enhanced Spotify Player</h3>
+      <h3 className="text-lg font-bold mb-4">🎵 Spotify Player (Web API)</h3>
       
-      {/* Enhanced status indicators */}
-      <div className="mb-4 flex gap-2 flex-wrap">
-        <div className={`px-3 py-1 rounded-full text-sm ${isReady ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
-          SDK: {isReady ? '✅ Ready' : '⏳ Loading'}
+      {/* Status indicators */}
+      <div className="flex flex-wrap gap-2 mb-4">
+        <div className={`px-3 py-1 rounded-full text-sm ${devices.length > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+          Devices: {devices.length}
         </div>
-        <div className={`px-3 py-1 rounded-full text-sm ${deviceFullyReady ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-          Device: {deviceFullyReady ? '✅ Registered' : '⏳ Registering'}
+        <div className={`px-3 py-1 rounded-full text-sm ${activeDevice ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
+          Active: {activeDevice ? activeDevice.name : 'None'}
         </div>
-        <div className={`px-3 py-1 rounded-full text-sm ${isActiveDevice ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
-          Active: {isActiveDevice ? '✅ Yes' : '❌ No'}
-        </div>
-        {transferringPlayback && (
-          <div className="px-3 py-1 rounded-full text-sm bg-purple-100 text-purple-700">
-            🔄 Transferring...
+        {playbackState && (
+          <div className={`px-3 py-1 rounded-full text-sm ${playbackState.is_playing ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+            {playbackState.is_playing ? '▶️ Playing' : '⏸️ Paused'}
           </div>
         )}
       </div>
-      
+
+      {/* Loading state */}
       {isLoading && (
         <div className="text-center py-8">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500 mx-auto mb-2"></div>
-          <p>Setting up enhanced player...</p>
+          <p>Connecting to Spotify...</p>
         </div>
       )}
-      
+
+      {/* Error display */}
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-          <p className="text-red-700 font-medium">❌ {error}</p>
+          <p className="text-red-700">❌ {error}</p>
+        </div>
+      )}
+
+      {/* No devices warning */}
+      {!isLoading && devices.length === 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+          <h4 className="font-bold text-yellow-800 mb-2">No Spotify devices found</h4>
+          <p className="text-yellow-700 text-sm mb-3">
+            Please open Spotify on one of your devices:
+          </p>
+          <ul className="text-sm text-yellow-700 space-y-1">
+            <li>• Spotify desktop app</li>
+            <li>• Spotify mobile app</li>
+            <li>• Spotify web player (open.spotify.com)</li>
+          </ul>
           <button 
-            onClick={refreshAuth}
-            className="mt-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 text-sm"
+            onClick={fetchDevices} 
+            className="mt-3 px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700"
           >
-            🔄 Re-authenticate
+            🔄 Refresh Devices
           </button>
         </div>
       )}
-      
-      {isReady && (
-        <div className="space-y-4">
-          {/* Device activation section */}
-          {!isActiveDevice && deviceFullyReady && (
-            <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h4 className="font-bold text-orange-800">🎯 Device Not Active</h4>
-                  <p className="text-orange-700 text-sm">
-                    This device isn't controlling playback. Click to make it active.
-                  </p>
-                </div>
-                <button
-                  onClick={transferPlaybackToThisDevice}
-                  disabled={transferringPlayback}
-                  className="bg-orange-500 text-white px-4 py-2 rounded hover:bg-orange-600 disabled:bg-orange-300"
-                >
-                  {transferringPlayback ? '🔄 Activating...' : '🎯 Activate Device'}
-                </button>
-              </div>
-            </div>
-          )}
 
-          {isActiveDevice && (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-              <p className="text-green-700">✅ This device is active and ready for playback control!</p>
-            </div>
-          )}
-          
-          {/* Enhanced controls */}
-          <div className="flex space-x-2">
+      {/* Device selector */}
+      {devices.length > 0 && (
+        <div className="mb-4">
+          <label className="block text-sm font-medium mb-2">Select Device:</label>
+          <div className="flex gap-2">
+            <select 
+              value={activeDevice?.id || ''} 
+              onChange={(e) => transferPlayback(e.target.value)}
+              disabled={transferringPlayback}
+              className="flex-1 px-3 py-2 border rounded-md"
+            >
+              <option value="">Choose a device...</option>
+              {devices.map(device => (
+                <option key={device.id} value={device.id}>
+                  {device.name} ({device.type}) {device.is_active ? '✓' : ''}
+                </option>
+              ))}
+            </select>
+            {transferringPlayback && (
+              <div className="px-3 py-2 bg-purple-100 text-purple-700 rounded">
+                🔄 Transferring...
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Playback controls */}
+      {activeDevice && (
+        <div className="space-y-4">
+          <div className="flex justify-center items-center gap-4">
             <button 
-              onClick={smartPreviousTrack}
-              disabled={!isActiveDevice}
-              className="px-3 py-2 bg-gray-200 rounded hover:bg-gray-300 disabled:bg-gray-100 disabled:cursor-not-allowed"
-              title={isActiveDevice ? "Previous Track" : "Device not active"}
+              onClick={skipToPrevious}
+              className="p-3 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors"
+              title="Previous Track"
             >
               ⏮️
             </button>
+            
             <button 
-              onClick={smartTogglePlayback}
-              disabled={!isActiveDevice}
-              className="px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
-              title={isActiveDevice ? "Play/Pause" : "Device not active - click Activate Device first"}
+              onClick={togglePlayback}
+              className="p-4 bg-green-500 text-white rounded-full hover:bg-green-600 transition-colors"
+              title={playbackState?.is_playing ? "Pause" : "Play"}
             >
-              {playerState?.paused === false ? '⏸️' : '▶️'}
+              {playbackState?.is_playing ? '⏸️' : '▶️'}
             </button>
+            
             <button 
-              onClick={smartNextTrack}
-              disabled={!isActiveDevice}
-              className="px-3 py-2 bg-gray-200 rounded hover:bg-gray-300 disabled:bg-gray-100 disabled:cursor-not-allowed"
-              title={isActiveDevice ? "Next Track" : "Device not active"}
+              onClick={skipToNext}
+              className="p-3 bg-gray-200 rounded-full hover:bg-gray-300 transition-colors"
+              title="Next Track"
             >
               ⏭️
             </button>
           </div>
-          
-          {/* Track info */}
-          {playerState?.track_window?.current_track && (
-            <div className="bg-gray-50 p-3 rounded">
-              <p className="font-medium">{playerState.track_window.current_track.name}</p>
+
+          {/* Current track info */}
+          {playbackState?.item && (
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <p className="font-semibold">{playbackState.item.name}</p>
               <p className="text-sm text-gray-600">
-                {playerState.track_window.current_track.artists.map((artist: any) => artist.name).join(', ')}
+                {playbackState.item.artists.map(a => a.name).join(', ')}
               </p>
-              <p className="text-xs text-gray-500">
-                {formatTime(currentPosition)} / {formatTime(playerState.duration)}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Status: {playerState.paused ? '⏸️ Paused' : '▶️ Playing'} | 
-                Device: {isActiveDevice ? '🎯 Active' : '💤 Inactive'}
-              </p>
+              <div className="mt-2">
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>{formatTime(playbackState.progress_ms || 0)}</span>
+                  <span>{formatTime(playbackState.item.duration_ms)}</span>
+                </div>
+                <div className="mt-1 bg-gray-200 rounded-full h-2">
+                  <div 
+                    className="bg-green-500 h-2 rounded-full transition-all"
+                    style={{ 
+                      width: `${(playbackState.progress_ms / playbackState.item.duration_ms) * 100}%` 
+                    }}
+                  />
+                </div>
+              </div>
             </div>
           )}
         </div>

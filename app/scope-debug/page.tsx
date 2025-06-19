@@ -11,7 +11,7 @@ interface TestResult {
 }
 
 interface DiagnosticResults {
-  webPlaybackScopeCheck?: TestResult
+  streamingScopeCheck?: TestResult
   basicApiTest?: TestResult
   devicesTest?: TestResult
   error?: string
@@ -30,22 +30,22 @@ export default function ScopeDiagnostic() {
     const token = (session as any).accessToken
     const results: DiagnosticResults = {}
 
-    // Test the specific URL that's failing
+    // ✅ Test streaming scope by checking devices endpoint
     try {
-      console.log('🧪 Testing web-playback scope check...')
-      const webPlaybackResponse = await fetch('https://api.spotify.com/v1/melody/v1/check_scope?scope=web-playback', {
+      console.log('🧪 Testing streaming scope via devices endpoint...')
+      const streamingResponse = await fetch('https://api.spotify.com/v1/me/player/devices', {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
       })
       
-      results.webPlaybackScopeCheck = {
-        status: webPlaybackResponse.status,
-        ok: webPlaybackResponse.ok,
-        error: webPlaybackResponse.ok ? undefined : await webPlaybackResponse.text()
+      results.streamingScopeCheck = {
+        status: streamingResponse.status,
+        ok: streamingResponse.ok,
+        error: streamingResponse.ok ? undefined : await streamingResponse.text()
       }
     } catch (error) {
-      results.webPlaybackScopeCheck = {
+      results.streamingScopeCheck = {
         status: 'error',
         error: error instanceof Error ? error.message : 'Unknown error'
       }
@@ -97,8 +97,19 @@ export default function ScopeDiagnostic() {
   }
 
   const currentScopes = ((session as any)?.scope || '').split(' ').filter(Boolean)
-  const requiredScopes = ['streaming', 'user-modify-playback-state', 'user-read-playback-state']
-  const hasWebPlayback = currentScopes.includes('web-playback')
+  
+  // ✅ Updated with correct required scopes for Web Playback SDK
+  const requiredScopes = [
+    'streaming',                    // The ONLY scope needed for Web Playback SDK
+    'user-read-email',             // Required for Web Playback SDK  
+    'user-read-private',           // Required for Web Playback SDK
+    'user-modify-playback-state',  // For controlling playback
+    'user-read-playback-state'     // For reading playback state
+  ]
+  
+  // ✅ Check if all required scopes are present
+  const hasAllRequiredScopes = requiredScopes.every(scope => currentScopes.includes(scope))
+  const hasStreamingScope = currentScopes.includes('streaming')
 
   return (
     <div className="max-w-4xl mx-auto p-6">
@@ -111,7 +122,8 @@ export default function ScopeDiagnostic() {
           <div className="text-sm space-y-1">
             <p><strong>Signed in:</strong> {session ? '✅ Yes' : '❌ No'}</p>
             <p><strong>Total scopes:</strong> {currentScopes.length}</p>
-            <p><strong>Has web-playback:</strong> {hasWebPlayback ? '✅ Yes' : '❌ No'}</p>
+            <p><strong>Has streaming:</strong> {hasStreamingScope ? '✅ Yes' : '❌ No'}</p>
+            <p><strong>Has all required:</strong> {hasAllRequiredScopes ? '✅ Yes' : '❌ No'}</p>
             <p><strong>Token preview:</strong> {(session as any)?.accessToken?.substring(0, 20) + '...' || 'None'}</p>
           </div>
         </div>
@@ -127,9 +139,6 @@ export default function ScopeDiagnostic() {
                 </p>
               )
             })}
-            <p className={hasWebPlayback ? 'text-green-700' : 'text-red-700'}>
-              {hasWebPlayback ? '✅' : '❌'} web-playback {hasWebPlayback ? '' : '(MISSING!)'}
-            </p>
           </div>
         </div>
       </div>
@@ -160,15 +169,15 @@ export default function ScopeDiagnostic() {
         <div className="space-y-4">
           <h3 className="text-xl font-bold">🧪 Test Results</h3>
           
-          {/* Web Playback Scope Check */}
+          {/* ✅ Updated Streaming Scope Check */}
           <div className="bg-white border rounded-lg p-4">
-            <h4 className="font-bold mb-2">🎯 Web Playback Scope Check</h4>
-            <p className="text-sm mb-2">This is the exact call that's failing in your player:</p>
+            <h4 className="font-bold mb-2">🎯 Streaming Scope Check</h4>
+            <p className="text-sm mb-2">Testing streaming capabilities via devices endpoint:</p>
             <div className="bg-gray-50 p-3 rounded">
-              <p><strong>Status:</strong> {testResults.webPlaybackScopeCheck?.status}</p>
-              <p><strong>Success:</strong> {testResults.webPlaybackScopeCheck?.ok ? '✅ Yes' : '❌ No'}</p>
-              {testResults.webPlaybackScopeCheck?.error && (
-                <p><strong>Error:</strong> <code className="text-red-600">{testResults.webPlaybackScopeCheck.error}</code></p>
+              <p><strong>Status:</strong> {testResults.streamingScopeCheck?.status}</p>
+              <p><strong>Success:</strong> {testResults.streamingScopeCheck?.ok ? '✅ Yes' : '❌ No'}</p>
+              {testResults.streamingScopeCheck?.error && (
+                <p><strong>Error:</strong> <code className="text-red-600">{testResults.streamingScopeCheck.error}</code></p>
               )}
             </div>
           </div>
@@ -202,12 +211,14 @@ export default function ScopeDiagnostic() {
         </div>
       )}
 
-      {/* Diagnosis */}
-      {!hasWebPlayback && (
+      {/* ✅ Updated Diagnosis */}
+      {!hasAllRequiredScopes && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 mt-6">
-          <h3 className="font-bold text-red-800 mb-3">🚨 Diagnosis: Missing web-playback Scope</h3>
+          <h3 className="font-bold text-red-800 mb-3">🚨 Diagnosis: Missing Required Scopes</h3>
           <div className="text-red-700 space-y-2">
-            <p><strong>Problem:</strong> Your token doesn't have the `web-playback` scope that the Web Playback SDK requires.</p>
+            <p><strong>Problem:</strong> Your token doesn't have all the scopes that the Web Playback SDK requires.</p>
+            <p><strong>Required Scopes:</strong> streaming, user-read-email, user-read-private, user-modify-playback-state, user-read-playback-state</p>
+            <p><strong>Missing Scopes:</strong> {requiredScopes.filter(scope => !currentScopes.includes(scope)).join(', ')}</p>
             <p><strong>Most Likely Cause:</strong> Your Spotify app in the Developer Dashboard doesn't have "Web Playback SDK" enabled.</p>
             <p><strong>Solution:</strong></p>
             <ol className="list-decimal list-inside ml-4 space-y-1">
@@ -218,6 +229,17 @@ export default function ScopeDiagnostic() {
               <li>Save changes and wait a few minutes</li>
               <li>Sign out and back in to your app</li>
             </ol>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ Success message when all scopes are present */}
+      {hasAllRequiredScopes && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-6 mt-6">
+          <h3 className="font-bold text-green-800 mb-3">✅ All Required Scopes Present!</h3>
+          <div className="text-green-700 space-y-2">
+            <p><strong>Great news!</strong> Your token has all the required scopes for the Web Playback SDK.</p>
+            <p><strong>Next steps:</strong> You should now be able to use the Web Playback SDK successfully. If you're still having issues, they're likely related to premium account status or network connectivity.</p>
           </div>
         </div>
       )}

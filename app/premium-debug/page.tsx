@@ -3,7 +3,7 @@
 import { useSession } from 'next-auth/react'
 import { useState } from 'react'
 
-interface PremiumCheckResult {
+interface PremiumCheck {
   method: string
   isPremium: boolean
   evidence: any
@@ -11,13 +11,43 @@ interface PremiumCheckResult {
   details: string
 }
 
-interface DebugResults {
-  tokenAnalysis?: any
-  basicApi?: any
-  premiumChecks?: PremiumCheckResult[]
-  webPlaybackTest?: any
-  melodyApiVariants?: any
-  tokenFreshness?: any
+interface DiagnosticResults {
+  tokenAnalysis?: {
+    hasToken: boolean
+    tokenPreview: string
+    hasStreaming: boolean
+    hasPlaybackModify: boolean
+    hasReadPrivate: boolean
+    scopeCount: number
+    rawScopeString: string
+    tokenExpired: boolean
+  }
+  premiumChecks?: PremiumCheck[]
+  streamingTest?: {
+    status: number | string
+    ok?: boolean
+    diagnosis: string
+    error?: string
+    statusText?: string
+    headers?: any
+    url?: string
+    responseBody?: any
+  }
+  tokenFreshness?: {
+    hasExpiresAt: boolean
+    expiresAt: string | number
+    isExpired: boolean | string
+    timeUntilExpiry: number | string
+    hasRefreshToken: boolean
+    refreshTokenPreview: string
+    recommendation: string
+    error?: string
+  }
+  basicApi?: {
+    status: string
+    userInfo?: any
+    error?: string
+  }
   overallDiagnosis?: {
     isPremium: boolean
     confidence: string
@@ -28,123 +58,118 @@ interface DebugResults {
 
 export default function EnhancedPremiumDebugger() {
   const { data: session } = useSession()
-  const [debugResults, setDebugResults] = useState<DebugResults>({})
+  const [debugResults, setDebugResults] = useState<DiagnosticResults>({})
   const [isRunning, setIsRunning] = useState(false)
 
   const runComprehensiveDiagnostic = async () => {
     if (!session?.accessToken) {
-      setDebugResults({ overallDiagnosis: { 
-        isPremium: false, 
-        confidence: 'high', 
-        mainIssue: 'No access token found',
-        recommendations: ['Please sign in with Spotify']
-      }})
+      setDebugResults({ tokenAnalysis: { hasToken: false } } as any)
       return
     }
 
     setIsRunning(true)
+    console.log('🔬 Starting comprehensive premium diagnostic...')
+    
     const token = (session as any).accessToken
-    const results: DebugResults = {}
-
-    console.log('🔍 Starting ENHANCED premium diagnostic...')
+    const results: DiagnosticResults = {}
 
     // STEP 1: Token Analysis
     try {
       console.log('🧪 Step 1: Deep token analysis...')
-      const scopes = (session as any).scope?.split(' ') || []
+      const sessionData = session as any
+      const scopes = sessionData?.scope || ''
+      const scopeArray = scopes.split(' ').filter(Boolean)
+      
       results.tokenAnalysis = {
-        preview: token.substring(0, 30) + '...',
-        length: token.length,
-        startsWithBQ: token.startsWith('BQ'),
-        isValidFormat: token.startsWith('BQ') && token.length > 100,
-        containsSpaces: token.includes(' '),
-        containsSpecialChars: /[^a-zA-Z0-9-_]/.test(token),
-        scopes,
-        scopeCount: scopes.length,
-        hasWebPlayback: scopes.includes('web-playback'),
-        hasStreaming: scopes.includes('streaming'),
-        hasPlaybackModify: scopes.includes('user-modify-playback-state'),
-        rawScopeString: (session as any).scope || '',
-        tokenHealth: token.startsWith('BQ') && token.length > 100 && !token.includes(' ') ? '✅ Healthy' : '⚠️ Suspicious'
+        hasToken: !!token,
+        tokenPreview: token.substring(0, 25) + '...',
+        hasStreaming: scopeArray.includes('streaming'),
+        hasPlaybackModify: scopeArray.includes('user-modify-playback-state'),
+        hasReadPrivate: scopeArray.includes('user-read-private'),
+        scopeCount: scopeArray.length,
+        rawScopeString: scopes,
+        tokenExpired: sessionData.expiresAt ? sessionData.expiresAt < Date.now() / 1000 : false
       }
+      
+      console.log('🔍 Token analysis complete:', results.tokenAnalysis)
     } catch (error) {
-      results.tokenAnalysis = { error: 'Failed to analyze token' }
+      results.tokenAnalysis = { 
+        hasToken: false, 
+        error: error instanceof Error ? error.message : 'Token analysis failed' 
+      } as any
     }
 
     // STEP 2: Multiple Premium Detection Methods
-    const premiumChecks: PremiumCheckResult[] = []
+    const premiumChecks: PremiumCheck[] = []
 
-    // Method 1: Profile Product Check (most reliable)
+    // Method 1: User Profile Check (most reliable for premium detection)
     try {
-      console.log('🧪 Step 2a: Profile product check...')
-      const meResponse = await fetch('https://api.spotify.com/v1/me', {
+      console.log('🧪 Step 2a: User profile premium check...')
+      const profileResponse = await fetch('https://api.spotify.com/v1/me', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       
-      if (meResponse.ok) {
-        const profile = await meResponse.json()
-        const isPremium = profile.product === 'premium'
+      if (profileResponse.ok) {
+        const profileData = await profileResponse.json()
+        const isPremium = profileData.product === 'premium'
+        
         premiumChecks.push({
-          method: 'Profile Product Field',
+          method: 'User Profile Check',
           isPremium,
-          evidence: { product: profile.product, country: profile.country },
+          evidence: { 
+            product: profileData.product, 
+            country: profileData.country,
+            followers: profileData.followers?.total 
+          },
           confidence: 'high',
-          details: isPremium ? 
-            `Account shows product: "${profile.product}" - this is premium!` : 
-            `Account shows product: "${profile.product}" - this is NOT premium!`
+          details: `Profile shows product: "${profileData.product}" - ${isPremium ? 'Premium confirmed!' : 'Free account detected'}`
         })
 
-        // Store basic API results too
         results.basicApi = {
           status: 'success',
-          statusCode: meResponse.status,
-          accountType: profile.product,
-          isPremium,
-          premiumStatus: isPremium ? '✅ PREMIUM CONFIRMED' : '❌ FREE ACCOUNT DETECTED',
-          country: profile.country,
-          userId: profile.id,
-          displayName: profile.display_name,
-          email: profile.email,
-          followers: profile.followers?.total || 0,
-          explicitContent: profile.explicit_content || {}
+          userInfo: {
+            name: profileData.display_name,
+            product: profileData.product,
+            country: profileData.country,
+            followers: profileData.followers?.total
+          }
         }
       } else {
         premiumChecks.push({
-          method: 'Profile Product Field',
+          method: 'User Profile Check',
           isPremium: false,
-          evidence: { error: `HTTP ${meResponse.status}`, response: await meResponse.text() },
-          confidence: 'low',
-          details: `Failed to get profile: ${meResponse.status}`
+          evidence: { status: profileResponse.status, error: await profileResponse.text() },
+          confidence: 'medium',
+          details: `Profile API failed with ${profileResponse.status} - might indicate API issues`
         })
       }
     } catch (error) {
       premiumChecks.push({
-        method: 'Profile Product Field',
+        method: 'User Profile Check',
         isPremium: false,
         evidence: { error: error instanceof Error ? error.message : 'Unknown error' },
         confidence: 'low',
-        details: 'Network error during profile check'
+        details: 'Profile check failed due to network/API error'
       })
     }
 
-    // Method 2: Available Markets Check (premium has more markets)
+    // Method 2: Top Tracks Check (premium users typically have more)
     try {
-      console.log('🧪 Step 2b: Markets availability check...')
-      const marketsResponse = await fetch('https://api.spotify.com/v1/markets', {
+      console.log('🧪 Step 2b: Top tracks count check...')
+      const topTracksResponse = await fetch('https://api.spotify.com/v1/me/top/tracks?limit=50', {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       
-      if (marketsResponse.ok) {
-        const marketsData = await marketsResponse.json()
-        const marketCount = marketsData.markets?.length || 0
-        // Premium accounts typically have access to 180+ markets
-        const likelyPremium = marketCount > 150
+      if (topTracksResponse.ok) {
+        const topTracksData = await topTracksResponse.json()
+        const trackCount = topTracksData.items?.length || 0
+        
         premiumChecks.push({
-          method: 'Markets Count Analysis',
-          isPremium: likelyPremium,
-          evidence: { marketCount, markets: marketsData.markets?.slice(0, 10) },
-          confidence: 'medium',
-          details: `Account has access to ${marketCount} markets. Premium typically has 180+, free has fewer.`
+          method: 'Top Tracks Analysis',
+          isPremium: trackCount > 20, // Rough heuristic
+          evidence: { trackCount, total: topTracksData.total },
+          confidence: 'low',
+          details: `Found ${trackCount} top tracks. Premium typically has 180+, free has fewer.`
         })
       }
     } catch (error) {
@@ -191,10 +216,10 @@ export default function EnhancedPremiumDebugger() {
 
     results.premiumChecks = premiumChecks
 
-    // STEP 3: The Failing Web Playback Test (The Main Problem)
+    // STEP 3: ✅ Fixed Streaming Test (instead of non-existent web-playback)
     try {
-      console.log('🧪 Step 3: Testing the failing web-playback endpoint...')
-      const webPlaybackResponse = await fetch('https://api.spotify.com/v1/melody/v1/check_scope?scope=web-playback', {
+      console.log('🧪 Step 3: Testing streaming capabilities...')
+      const streamingResponse = await fetch('https://api.spotify.com/v1/me/player/devices', {
         headers: { 
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -203,26 +228,26 @@ export default function EnhancedPremiumDebugger() {
       })
       
       const responseHeaders: any = {}
-      webPlaybackResponse.headers.forEach((value, key) => {
+      streamingResponse.headers.forEach((value, key) => {
         responseHeaders[key] = value
       })
 
-      results.webPlaybackTest = {
-        status: webPlaybackResponse.status,
-        statusText: webPlaybackResponse.statusText,
-        ok: webPlaybackResponse.ok,
+      results.streamingTest = {
+        status: streamingResponse.status,
+        statusText: streamingResponse.statusText,
+        ok: streamingResponse.ok,
         headers: responseHeaders,
-        url: webPlaybackResponse.url,
-        responseBody: webPlaybackResponse.ok ? await webPlaybackResponse.json() : await webPlaybackResponse.text(),
-        diagnosis: webPlaybackResponse.status === 403 ? 
-          'FREE ACCOUNT - Web Playback SDK requires Premium!' : 
-          webPlaybackResponse.ok ? 'Premium account confirmed!' : 'Unexpected error'
+        url: streamingResponse.url,
+        responseBody: streamingResponse.ok ? await streamingResponse.json() : await streamingResponse.text(),
+        diagnosis: streamingResponse.status === 403 ? 
+          'FREE ACCOUNT - Streaming requires Premium!' : 
+          streamingResponse.ok ? 'Streaming capabilities confirmed!' : 'Unexpected streaming error'
       }
     } catch (error) {
-      results.webPlaybackTest = { 
+      results.streamingTest = { 
         status: 'error', 
         error: error instanceof Error ? error.message : 'Unknown error',
-        diagnosis: 'Network error - could not test web playback scope'
+        diagnosis: 'Network error - could not test streaming capabilities'
       }
     }
 
@@ -241,7 +266,7 @@ export default function EnhancedPremiumDebugger() {
           'Token is expired - refresh needed!' : 'Token appears fresh'
       }
     } catch (error) {
-      results.tokenFreshness = { error: 'Token freshness check failed' }
+      results.tokenFreshness = { error: 'Token freshness check failed' } as any
     }
 
     // STEP 5: Overall Diagnosis
@@ -256,15 +281,15 @@ export default function EnhancedPremiumDebugger() {
       mainIssue = 'Account is FREE, not Premium - Web Playback SDK requires Premium!'
       recommendations.push('Upgrade to Spotify Premium at https://spotify.com/premium')
       recommendations.push('Web Playback SDK only works with Premium accounts')
-    } else if (results.webPlaybackTest?.status === 403) {
+    } else if (results.streamingTest?.status === 403) {
       mainIssue = 'Premium account detected, but Web Playback SDK not enabled in app settings'
       recommendations.push('Go to Spotify Developer Dashboard → Your App → Edit Settings')
       recommendations.push('Enable "Web Playback SDK" in the APIs section')
       recommendations.push('Save changes and wait 5-10 minutes')
       recommendations.push('Sign out and back in to refresh token with new permissions')
-    } else if (!results.tokenAnalysis?.hasWebPlayback) {
-      mainIssue = 'Premium account but missing web-playback scope in token'
-      recommendations.push('Check your NextAuth configuration includes web-playback scope')
+    } else if (!results.tokenAnalysis?.hasStreaming) {
+      mainIssue = 'Premium account but missing streaming scope in token'
+      recommendations.push('Check your NextAuth configuration includes streaming scope')
       recommendations.push('Ensure Web Playback SDK is enabled in Spotify Developer Dashboard')
       recommendations.push('Sign out and back in to get fresh token with correct scopes')
     } else {
@@ -295,7 +320,7 @@ export default function EnhancedPremiumDebugger() {
         <div className="text-blue-700 space-y-2">
           <p>✅ <strong>Multiple Premium Checks:</strong> Uses 3+ different methods to verify premium status</p>
           <p>✅ <strong>Token Deep Analysis:</strong> Examines your authentication token for issues</p>
-          <p>✅ <strong>Web Playback Testing:</strong> Tests the exact endpoint that's failing</p>
+          <p>✅ <strong>Streaming Testing:</strong> Tests streaming capabilities properly</p>
           <p>✅ <strong>Smart Diagnosis:</strong> Identifies the root cause and gives specific fix recommendations</p>
           <p className="font-medium mt-2 text-purple-700">🔍 This will definitively tell you if premium is the issue!</p>
         </div>
@@ -306,62 +331,35 @@ export default function EnhancedPremiumDebugger() {
         disabled={!session || isRunning}
         className="w-full bg-gradient-to-r from-red-500 to-purple-600 text-white py-4 px-6 rounded-lg font-medium text-lg hover:from-red-600 hover:to-purple-700 disabled:bg-gray-300 mb-6 transition-all"
       >
-        {isRunning ? '🔄 Running Enhanced Diagnostic...' : '🔬 Run Enhanced Premium Diagnostic'}
+        {isRunning ? '🔄 Running Comprehensive Diagnostic...' : '🚀 Run Enhanced Premium Diagnostic'}
       </button>
 
-      {debugResults.overallDiagnosis && (
-        <div className={`rounded-lg p-6 mb-6 border-2 ${
-          debugResults.overallDiagnosis.isPremium 
-            ? 'bg-green-50 border-green-200' 
-            : 'bg-red-50 border-red-200'
-        }`}>
-          <h3 className={`font-bold text-xl mb-3 ${
-            debugResults.overallDiagnosis.isPremium ? 'text-green-800' : 'text-red-800'
-          }`}>
-            🎯 DIAGNOSIS: {debugResults.overallDiagnosis.isPremium ? 'PREMIUM ACCOUNT ✅' : 'FREE ACCOUNT ❌'}
-          </h3>
-          <div className={debugResults.overallDiagnosis.isPremium ? 'text-green-700' : 'text-red-700'}>
-            <p className="text-lg mb-3"><strong>Main Issue:</strong> {debugResults.overallDiagnosis.mainIssue}</p>
-            <div>
-              <p className="font-bold mb-2">🔧 Recommended Actions:</p>
-              <ol className="list-decimal list-inside space-y-1 ml-4">
-                {debugResults.overallDiagnosis.recommendations.map((rec, idx) => (
-                  <li key={idx}>{rec}</li>
-                ))}
-              </ol>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* Results Display */}
       {Object.keys(debugResults).length > 0 && (
         <div className="space-y-6">
-          {/* Premium Checks Results */}
-          {debugResults.premiumChecks && (
-            <div className="bg-white border rounded-lg p-4">
-              <h3 className="font-bold mb-3">💎 Premium Status Checks</h3>
-              <div className="space-y-3">
-                {debugResults.premiumChecks.map((check, idx) => (
-                  <div key={idx} className={`p-3 rounded border-l-4 ${
-                    check.isPremium ? 'border-green-400 bg-green-50' : 'border-red-400 bg-red-50'
-                  }`}>
-                    <div className="flex justify-between items-start mb-2">
-                      <h4 className="font-medium">{check.method}</h4>
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        check.isPremium ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'
-                      }`}>
-                        {check.isPremium ? 'PREMIUM' : 'FREE'} ({check.confidence} confidence)
-                      </span>
-                    </div>
-                    <p className="text-sm mb-2">{check.details}</p>
-                    <details className="text-xs">
-                      <summary className="cursor-pointer text-gray-600">View evidence</summary>
-                      <pre className="mt-2 bg-gray-100 p-2 rounded overflow-x-auto">
-                        {JSON.stringify(check.evidence, null, 2)}
-                      </pre>
-                    </details>
-                  </div>
-                ))}
+          <h2 className="text-2xl font-bold">📊 Diagnostic Results</h2>
+
+          {/* Overall Diagnosis */}
+          {debugResults.overallDiagnosis && (
+            <div className={`border rounded-lg p-6 ${
+              debugResults.overallDiagnosis.isPremium ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'
+            }`}>
+              <h3 className={`font-bold mb-3 ${
+                debugResults.overallDiagnosis.isPremium ? 'text-green-800' : 'text-red-800'
+              }`}>
+                🎯 Overall Diagnosis: {debugResults.overallDiagnosis.isPremium ? 'Premium Account ✅' : 'Free Account ❌'}
+              </h3>
+              <div className={debugResults.overallDiagnosis.isPremium ? 'text-green-700' : 'text-red-700'}>
+                <p className="font-medium mb-2">{debugResults.overallDiagnosis.mainIssue}</p>
+                <p className="text-sm mb-3">Confidence: {debugResults.overallDiagnosis.confidence}</p>
+                <div>
+                  <p className="font-medium mb-2">🛠️ Recommendations:</p>
+                  <ul className="list-disc list-inside space-y-1 text-sm">
+                    {debugResults.overallDiagnosis.recommendations.map((rec, i) => (
+                      <li key={i}>{rec}</li>
+                    ))}
+                  </ul>
+                </div>
               </div>
             </div>
           )}
@@ -372,16 +370,15 @@ export default function EnhancedPremiumDebugger() {
               <h3 className="font-bold mb-3">🔑 Token Analysis</h3>
               <div className="grid md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <p><strong>Token Preview:</strong> <code className="text-xs bg-gray-100 px-1">{debugResults.tokenAnalysis.preview}</code></p>
-                  <p><strong>Length:</strong> {debugResults.tokenAnalysis.length} chars</p>
-                  <p><strong>Format:</strong> {debugResults.tokenAnalysis.isValidFormat ? '✅ Valid BQ format' : '❌ Invalid format'}</p>
-                  <p><strong>Health:</strong> {debugResults.tokenAnalysis.tokenHealth}</p>
+                  <p><strong>Has Token:</strong> {debugResults.tokenAnalysis.hasToken ? '✅ Yes' : '❌ No'}</p>
+                  <p><strong>Token Preview:</strong> {debugResults.tokenAnalysis.tokenPreview || 'None'}</p>
+                  <p><strong>Scope Count:</strong> {debugResults.tokenAnalysis.scopeCount || 0}</p>
+                  <p><strong>Token Expired:</strong> {debugResults.tokenAnalysis.tokenExpired ? '❌ Yes' : '✅ No'}</p>
                 </div>
                 <div>
-                  <p><strong>Scope Count:</strong> {debugResults.tokenAnalysis.scopeCount}</p>
-                  <p><strong>Has web-playback:</strong> {debugResults.tokenAnalysis.hasWebPlayback ? '✅ Yes' : '❌ No'}</p>
                   <p><strong>Has streaming:</strong> {debugResults.tokenAnalysis.hasStreaming ? '✅ Yes' : '❌ No'}</p>
                   <p><strong>Has playback-modify:</strong> {debugResults.tokenAnalysis.hasPlaybackModify ? '✅ Yes' : '❌ No'}</p>
+                  <p><strong>Has user-read-private:</strong> {debugResults.tokenAnalysis.hasReadPrivate ? '✅ Yes' : '❌ No'}</p>
                 </div>
               </div>
               <details className="mt-3">
@@ -393,27 +390,27 @@ export default function EnhancedPremiumDebugger() {
             </div>
           )}
 
-          {/* Web Playback Test */}
-          {debugResults.webPlaybackTest && (
+          {/* ✅ Updated Streaming Test */}
+          {debugResults.streamingTest && (
             <div className="bg-white border rounded-lg p-4">
-              <h3 className="font-bold mb-3">🎯 Web Playback Scope Test (The Failing Call)</h3>
+              <h3 className="font-bold mb-3">🎵 Streaming Capabilities Test</h3>
               <div className="bg-gray-50 p-3 rounded">
-                <p className="text-xs mb-2"><strong>URL:</strong> https://api.spotify.com/v1/melody/v1/check_scope?scope=web-playback</p>
+                <p className="text-xs mb-2"><strong>URL:</strong> https://api.spotify.com/v1/me/player/devices</p>
                 <p><strong>Status:</strong> <span className={`font-mono px-2 py-1 rounded ${
-                  debugResults.webPlaybackTest.ok ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                  debugResults.streamingTest.ok ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                 }`}>
-                  {debugResults.webPlaybackTest.status} {debugResults.webPlaybackTest.statusText}
+                  {debugResults.streamingTest.status} {debugResults.streamingTest.statusText}
                 </span></p>
                 <p><strong>Diagnosis:</strong> <span className={
-                  debugResults.webPlaybackTest.ok ? 'text-green-600' : 'text-red-600'
-                }>{debugResults.webPlaybackTest.diagnosis}</span></p>
-                {debugResults.webPlaybackTest.responseBody && (
+                  debugResults.streamingTest.ok ? 'text-green-600' : 'text-red-600'
+                }>{debugResults.streamingTest.diagnosis}</span></p>
+                {debugResults.streamingTest.responseBody && (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-sm text-gray-600">View response</summary>
                     <pre className="mt-2 text-xs bg-white p-2 rounded border overflow-x-auto">
-                      {typeof debugResults.webPlaybackTest.responseBody === 'string' 
-                        ? debugResults.webPlaybackTest.responseBody 
-                        : JSON.stringify(debugResults.webPlaybackTest.responseBody, null, 2)}
+                      {typeof debugResults.streamingTest.responseBody === 'string' 
+                        ? debugResults.streamingTest.responseBody 
+                        : JSON.stringify(debugResults.streamingTest.responseBody, null, 2)}
                     </pre>
                   </details>
                 )}
@@ -426,19 +423,48 @@ export default function EnhancedPremiumDebugger() {
             <div className="bg-white border rounded-lg p-4">
               <h3 className="font-bold mb-3">🌐 Basic Spotify API Test</h3>
               <div className="text-sm space-y-1">
-                <p><strong>Status:</strong> <span className={debugResults.basicApi.status === 'success' ? 'text-green-600' : 'text-red-600'}>
-                  {debugResults.basicApi.statusCode} {debugResults.basicApi.status}
-                </span></p>
-                {debugResults.basicApi.status === 'success' && (
-                  <>
-                    <p><strong>Premium Status:</strong> <span className={debugResults.basicApi.isPremium ? 'text-green-600 font-bold' : 'text-red-600 font-bold'}>
-                      {debugResults.basicApi.premiumStatus}
-                    </span></p>
-                    <p><strong>Account Type:</strong> {debugResults.basicApi.accountType}</p>
-                    <p><strong>User:</strong> {debugResults.basicApi.displayName} ({debugResults.basicApi.userId})</p>
-                    <p><strong>Country:</strong> {debugResults.basicApi.country}</p>
-                  </>
+                <p><strong>Status:</strong> <span className={debugResults.basicApi.status === 'success' ? 
+                  'text-green-600' : 'text-red-600'}>{debugResults.basicApi.status}</span></p>
+                {debugResults.basicApi.userInfo && (
+                  <div className="bg-gray-50 p-3 rounded mt-2">
+                    <p><strong>User:</strong> {debugResults.basicApi.userInfo.name || 'Unknown'}</p>
+                    <p><strong>Product:</strong> <span className={`font-bold ${
+                      debugResults.basicApi.userInfo.product === 'premium' ? 'text-green-600' : 'text-red-600'
+                    }`}>{debugResults.basicApi.userInfo.product || 'Unknown'}</span></p>
+                    <p><strong>Country:</strong> {debugResults.basicApi.userInfo.country || 'Unknown'}</p>
+                    <p><strong>Followers:</strong> {debugResults.basicApi.userInfo.followers || 0}</p>
+                  </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Premium Checks */}
+          {debugResults.premiumChecks && debugResults.premiumChecks.length > 0 && (
+            <div className="bg-white border rounded-lg p-4">
+              <h3 className="font-bold mb-3">🔍 Premium Detection Methods</h3>
+              <div className="space-y-3">
+                {debugResults.premiumChecks.map((check, i) => (
+                  <div key={i} className={`p-3 rounded border-l-4 ${
+                    check.isPremium ? 'border-green-400 bg-green-50' : 'border-red-400 bg-red-50'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-medium">{check.method}</h4>
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${
+                        check.isPremium ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {check.isPremium ? 'PREMIUM' : 'FREE'} ({check.confidence})
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700 mb-2">{check.details}</p>
+                    <details>
+                      <summary className="cursor-pointer text-xs text-gray-500">View evidence</summary>
+                      <pre className="mt-1 text-xs bg-white p-2 rounded border">
+                        {JSON.stringify(check.evidence, null, 2)}
+                      </pre>
+                    </details>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -446,15 +472,15 @@ export default function EnhancedPremiumDebugger() {
           {/* Token Freshness */}
           {debugResults.tokenFreshness && (
             <div className="bg-white border rounded-lg p-4">
-              <h3 className="font-bold mb-3">⏰ Token Freshness</h3>
+              <h3 className="font-bold mb-3">⏰ Token Freshness Analysis</h3>
               <div className="text-sm space-y-1">
                 <p><strong>Expires At:</strong> {debugResults.tokenFreshness.expiresAt}</p>
-                <p><strong>Is Expired:</strong> {debugResults.tokenFreshness.isExpired === true ? '❌ Yes' : debugResults.tokenFreshness.isExpired === false ? '✅ No' : 'Unknown'}</p>
-                <p><strong>Time Until Expiry:</strong> {debugResults.tokenFreshness.timeUntilExpiry === 'unknown' ? 'Unknown' : `${debugResults.tokenFreshness.timeUntilExpiry} seconds`}</p>
+                <p><strong>Is Expired:</strong> {debugResults.tokenFreshness.isExpired ? '❌ Yes' : '✅ No'}</p>
+                <p><strong>Time Until Expiry:</strong> {debugResults.tokenFreshness.timeUntilExpiry} seconds</p>
                 <p><strong>Has Refresh Token:</strong> {debugResults.tokenFreshness.hasRefreshToken ? '✅ Yes' : '❌ No'}</p>
-                <p><strong>Recommendation:</strong> <span className={debugResults.tokenFreshness.recommendation?.includes('expired') ? 'text-red-600' : 'text-green-600'}>
-                  {debugResults.tokenFreshness.recommendation}
-                </span></p>
+                <p className={`font-medium ${debugResults.tokenFreshness.recommendation.includes('expired') ? 'text-red-600' : 'text-green-600'}`}>
+                  <strong>Recommendation:</strong> {debugResults.tokenFreshness.recommendation}
+                </p>
               </div>
             </div>
           )}
