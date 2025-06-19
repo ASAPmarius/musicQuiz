@@ -231,20 +231,48 @@ export default function SpotifyTestPage() {
     }
   }
 
-  // Fetch tracks from selected playlist
+  // Fetch tracks from selected playlist 
   const fetchTracks = async (playlistId: string) => {
     setLoading(true)
     setError('')
     
     try {
-      const response = await fetch(`/api/spotify/playlist/${playlistId}/tracks`)
+      let allTracks: Track[] = []
+      let offset = 0
+      const limit = 50 // Max per request
+      let hasMore = true
       
-      if (!response.ok) {
-        throw new Error(`Failed to fetch tracks: ${response.status}`)
+      console.log('🎵 Loading ALL playlist tracks...')
+      setLoadingProgress(`Loading... ${allTracks.length} tracks so far`)
+
+      while (hasMore) {
+        const response = await fetch(`/api/spotify/playlist/${playlistId}/tracks?limit=${limit}&offset=${offset}`)
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch tracks: ${response.status}`)
+        }
+        
+        setLoadingProgress(`Loading... ${allTracks.length} tracks so far`)
+        const data = await response.json()
+        const newTracks = data.tracks || []
+        
+        allTracks = [...allTracks, ...newTracks]
+        console.log(`📥 Loaded ${newTracks.length} tracks (total: ${allTracks.length})`)
+        
+        // Check if there are more pages
+        hasMore = data.has_more && newTracks.length > 0
+        offset += limit
+        
+        // Safety break
+        if (offset > 5000) {
+          console.warn('⚠️ Stopped at 5,000 tracks for safety')
+          break
+        }
       }
       
-      const data = await response.json()
-      setTracks(data.tracks || [])
+      console.log(`✅ Finished loading ${allTracks.length} playlist tracks`)
+      setLoadingProgress('')
+      setTracks(allTracks) // Now contains ALL tracks!
       
     } catch (err) {
       console.error('Error fetching tracks:', err)
@@ -358,14 +386,40 @@ export default function SpotifyTestPage() {
     setError('')
     
     try {
-      const response = await fetch(`/api/spotify/album/${albumId}/tracks`)
+      let allTracks: Track[] = []
+      let offset = 0
+      const limit = 50
+      let hasMore = true
       
-      if (!response.ok) {
-        throw new Error(`Failed to fetch album tracks: ${response.status}`)
+      console.log('💿 Loading ALL album tracks...')
+      setLoadingProgress(`Loading... ${allTracks.length} tracks so far`)
+
+      while (hasMore) {
+        const response = await fetch(`/api/spotify/album/${albumId}/tracks?limit=${limit}&offset=${offset}`)
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch album tracks: ${response.status}`)
+        }
+        
+        setLoadingProgress(`Loading... ${allTracks.length} tracks so far`)
+        const data = await response.json()
+        const newTracks = data.tracks || []
+        
+        allTracks = [...allTracks, ...newTracks]
+        console.log(`📥 Loaded ${newTracks.length} tracks (total: ${allTracks.length})`)
+        
+        hasMore = data.has_more && newTracks.length > 0
+        offset += limit
+        
+        if (offset > 1000) { // Albums are usually smaller
+          console.warn('⚠️ Stopped at 1,000 tracks for safety')
+          break
+        }
       }
       
-      const data = await response.json()
-      setAlbumTracks(data.tracks || [])
+      console.log(`✅ Finished loading ${allTracks.length} album tracks`)
+      setLoadingProgress('')
+      setAlbumTracks(allTracks)
       
     } catch (err) {
       console.error('Error fetching album tracks:', err)

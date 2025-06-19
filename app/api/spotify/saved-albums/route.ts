@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const accessToken = (session as any).accessTokenput
+    const accessToken = (session as any).accessToken
     const { searchParams } = new URL(request.url)
     const offset = searchParams.get('offset') || '0'
     const limit = searchParams.get('limit') || '20' // Albums usually smaller limit
