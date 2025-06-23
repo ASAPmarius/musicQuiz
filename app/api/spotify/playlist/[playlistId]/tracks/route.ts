@@ -2,14 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 
+
 export async function GET(
   request: NextRequest,
-  { params }: { params: { playlistId: string } }
+  { params }: { params: Promise<{ playlistId: string }> }
 ) {
-  console.log(`🎵 Playlist tracks API called for playlist ${params.playlistId}`)
-  
   try {
-    // Check for Bearer token first (for server-to-server calls)
+    const { playlistId } = await params
+    console.log(`🎵 Playlist tracks API called for playlist ${playlistId}`)
+
     const authHeader = request.headers.get('authorization')
     let accessToken: string | undefined
     
@@ -32,7 +33,7 @@ export async function GET(
 
     // Fetch all tracks from playlist with pagination
     let allTracks: any[] = []
-    let nextUrl: string | null = `https://api.spotify.com/v1/playlists/${params.playlistId}/tracks?limit=100&fields=items(track(id,name,artists,album,preview_url)),next,total`
+    let nextUrl: string | null = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&fields=items(track(id,name,artists,album,preview_url)),next,total`
     
     while (nextUrl) {
       const response: Response = await fetch(nextUrl, {

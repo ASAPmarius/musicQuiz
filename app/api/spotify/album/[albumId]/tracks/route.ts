@@ -4,11 +4,12 @@ import { authOptions } from '@/pages/api/auth/[...nextauth]'
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { albumId: string } }
+  { params }: { params: Promise<{ albumId: string }> }
 ) {
-  console.log(`🎵 Album tracks API called for album ${params.albumId}`)
-  
   try {
+    const { albumId } = await params
+    console.log(`🎵 Album tracks API called for album ${albumId}`)
+  
     // Check for Bearer token first (for server-to-server calls)
     const authHeader = request.headers.get('authorization')
     let accessToken: string | undefined
@@ -32,7 +33,7 @@ export async function GET(
 
     // Fetch all tracks from album (usually no pagination needed, but let's be safe)
     let allTracks: any[] = []
-    let nextUrl: string | null = `https://api.spotify.com/v1/albums/${params.albumId}/tracks?limit=50`
+    let nextUrl: string | null = `https://api.spotify.com/v1/albums/${albumId}/tracks?limit=50`
     
     while (nextUrl) {
       const response: Response = await fetch(nextUrl, {
