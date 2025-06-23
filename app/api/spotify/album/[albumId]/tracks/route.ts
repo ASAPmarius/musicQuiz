@@ -4,74 +4,78 @@ import { authOptions } from '@/pages/api/auth/[...nextauth]'
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ albumId: string }> }
+  { params }: { params: { albumId: string } }
 ) {
+  console.log(`🎵 Album tracks API called for album ${params.albumId}`)
+  
   try {
-    const { albumId } = await params
-    console.log('💿 Fetching tracks for album:', albumId)
+    // Check for Bearer token first (for server-to-server calls)
+    const authHeader = request.headers.get('authorization')
+    let accessToken: string | undefined
     
-    const session = await getServerSession(authOptions)
+    if (authHeader?.startsWith('Bearer ')) {
+      accessToken = authHeader.substring(7)
+      console.log('✅ Using Bearer token')
+    } else {
+      // Fall back to session check (for client calls)
+      const session = await getServerSession(authOptions)
+      accessToken = (session as any)?.accessToken
+      if (accessToken) {
+        console.log('✅ Using session token')
+      }
+    }
     
-    if (!session || !(session as any)?.accessToken) {
+    if (!accessToken) {
+      console.log('❌ No session or token')
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const accessToken = (session as any).accessToken
-    const { searchParams } = new URL(request.url)
-    const offset = searchParams.get('offset') || '0'
-    const limit = searchParams.get('limit') || '50'
-
-    // 🎵 Get album tracks (note: different endpoint structure than playlists!)
-    const response = await fetch(
-      `https://api.spotify.com/v1/albums/${albumId}/tracks?offset=${offset}&limit=${limit}`,
-      {
+    // Fetch all tracks from album (usually no pagination needed, but let's be safe)
+    let allTracks: any[] = []
+    let nextUrl: string | null = `https://api.spotify.com/v1/albums/${params.albumId}/tracks?limit=50`
+    
+    while (nextUrl) {
+      const response: Response = await fetch(nextUrl, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
-      }
-    )
+      })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      return NextResponse.json({
-        error: `Spotify API error: ${response.status}`,
-        details: errorText
-      }, { status: response.status })
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('Spotify API error:', response.status, errorText)
+        
+        if (response.status === 401) {
+          return NextResponse.json({ error: 'Spotify token expired' }, { status: 401 })
+        }
+        
+        if (response.status === 404) {
+          return NextResponse.json({ error: 'Album not found' }, { status: 404 })
+        }
+        
+        return NextResponse.json({ 
+          error: 'Failed to fetch album tracks',
+          details: errorText 
+        }, { status: response.status })
+      }
+
+      const data = await response.json()
+      allTracks = allTracks.concat(data.items || [])
+      nextUrl = data.next // Usually null for albums, but just in case
+      
+      if (data.total) {
+        console.log(`Fetched ${allTracks.length}/${data.total} tracks from album`)
+      }
     }
 
-    const data = await response.json()
-    console.log('💿 Raw album tracks from Spotify:', data.items?.length || 0)
+    console.log(`✅ Returning ${allTracks.length} tracks from album`)
+    return NextResponse.json(allTracks)
     
-    // ⚠️ IMPORTANT: Album tracks endpoint returns different structure than playlist tracks!
-    // Album tracks are directly in 'items', not wrapped in 'track' objects
-    const allTracks = data.items
-      .filter((track: any) => track && track.id) // Filter out null tracks
-      .map((track: any) => ({
-        id: track.id,
-        name: track.name,
-        artists: track.artists.map((artist: any) => artist.name).join(', '),
-        uri: track.uri,
-        preview_url: track.preview_url,
-        duration_ms: track.duration_ms,
-        track_number: track.track_number,
-        // Note: Album tracks don't have album info (they're already from an album!)
-        hasPreview: !!track.preview_url,
-        canPlayWithSDK: true
-      }))
-
-    return NextResponse.json({
-      tracks: allTracks,
-      total: data.total,
-      offset: data.offset,
-      limit: data.limit,
-      has_more: data.offset + data.limit < data.total
-    })
-
   } catch (error) {
-    console.error('❌ Album tracks error:', error)
-    return NextResponse.json({
-      error: 'Internal server error',
+    console.error('Error in /api/spotify/albums/[id]/tracks:', error)
+    return NextResponse.json({ 
+      error: 'Failed to fetch album tracks',
       details: error instanceof Error ? error.message : 'Unknown error'
     }, { status: 500 })
   }

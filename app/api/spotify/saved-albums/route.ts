@@ -3,64 +3,72 @@ import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 
 export async function GET(request: NextRequest) {
-  console.log('💿 Saved albums API called')
+  console.log('🎵 Albums API called')
   
   try {
-    const session = await getServerSession(authOptions)
+    // Check for Bearer token first (for server-to-server calls)
+    const authHeader = request.headers.get('authorization')
+    let accessToken: string | undefined
     
-    if (!session || !(session as any)?.accessToken) {
+    if (authHeader?.startsWith('Bearer ')) {
+      accessToken = authHeader.substring(7)
+      console.log('✅ Using Bearer token')
+    } else {
+      // Fall back to session check (for client calls)
+      const session = await getServerSession(authOptions)
+      accessToken = (session as any)?.accessToken
+      if (accessToken) {
+        console.log('✅ Using session token')
+      }
+    }
+    
+    if (!accessToken) {
+      console.log('❌ No session or token')
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const accessToken = (session as any).accessToken
-    const { searchParams } = new URL(request.url)
-    const offset = searchParams.get('offset') || '0'
-    const limit = searchParams.get('limit') || '20' // Albums usually smaller limit
-
-    // 🎵 This is the Spotify endpoint for saved albums  
-    const response = await fetch(
-      `https://api.spotify.com/v1/me/albums?offset=${offset}&limit=${limit}`,
-      {
+    // Fetch all saved albums with pagination
+    let allAlbums: any[] = []
+    let nextUrl: string | null = 'https://api.spotify.com/v1/me/albums?limit=50'
+    
+    while (nextUrl) {
+      const response: Response = await fetch(nextUrl, {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
-      }
-    )
+      })
 
-    if (!response.ok) {
-      const errorText = await response.text()
-      return NextResponse.json({
-        error: 'Spotify API error',
-        details: errorText
-      }, { status: response.status })
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('Spotify API error:', response.status, errorText)
+        
+        if (response.status === 401) {
+          return NextResponse.json({ error: 'Spotify token expired' }, { status: 401 })
+        }
+        
+        return NextResponse.json({ 
+          error: 'Failed to fetch albums',
+          details: errorText 
+        }, { status: response.status })
+      }
+
+      const data = await response.json()
+      // Extract just the album objects
+      const albums = (data.items || []).map((item: any) => item.album).filter(Boolean)
+      allAlbums = allAlbums.concat(albums)
+      nextUrl = data.next
+      
+      console.log(`Fetched ${allAlbums.length}/${data.total} albums`)
     }
 
-    const data = await response.json()
+    console.log(`✅ Returning ${allAlbums.length} albums`)
+    return NextResponse.json(allAlbums)
     
-    // Format saved albums
-    const formattedAlbums = data.items.map((item: any) => ({
-      id: item.album.id,
-      name: item.album.name,
-      artists: item.album.artists.map((artist: any) => artist.name).join(', '),
-      total_tracks: item.album.total_tracks,
-      images: item.album.images,
-      release_date: item.album.release_date,
-      added_at: item.added_at
-    }))
-
-    return NextResponse.json({
-      albums: formattedAlbums,
-      total: data.total,
-      offset: data.offset,
-      limit: data.limit,
-      has_more: data.offset + data.limit < data.total
-    })
-
   } catch (error) {
-    console.error('❌ Error:', error)
-    return NextResponse.json({
-      error: 'Internal server error',
+    console.error('Error in /api/spotify/albums:', error)
+    return NextResponse.json({ 
+      error: 'Failed to fetch albums',
       details: error instanceof Error ? error.message : 'Unknown error'
     }, { status: 500 })
   }
