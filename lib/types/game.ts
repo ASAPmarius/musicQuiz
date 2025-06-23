@@ -16,7 +16,6 @@ export interface Song {
   id: string
   name: string
   artists: string
-  preview_url: string
   album: string
   owners: OwnerInfo[]
 }

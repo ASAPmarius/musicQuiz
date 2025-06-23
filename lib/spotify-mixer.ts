@@ -45,13 +45,12 @@ export async function fetchPlayerSongsWithSource(
     // 4. Process liked songs
     if (Array.isArray(likedSongs)) {
       likedSongs.forEach((track: any) => {
-        if (track.preview_url && !seenSongIds.has(track.id)) {
+        if (track && track.id && !seenSongIds.has(track.id)) {
           seenSongIds.add(track.id)
           songs.push({
             id: track.id,
             name: track.name,
             artists: track.artists,
-            preview_url: track.preview_url,
             album: track.album,
             owners: [{
               playerId,
@@ -82,13 +81,12 @@ export async function fetchPlayerSongsWithSource(
           const tracks = Array.isArray(tracksData) ? tracksData : (tracksData.items || [])
           
           tracks.forEach((track: any) => {
-            if (track && track.preview_url && !seenSongIds.has(track.id)) {
+            if (track && track.id && !seenSongIds.has(track.id)) {
               seenSongIds.add(track.id)
               songs.push({
                 id: track.id,
                 name: track.name,
                 artists: track.artists,
-                preview_url: track.preview_url,
                 album: track.album,
                 owners: [{
                   playerId,
@@ -112,6 +110,9 @@ export async function fetchPlayerSongsWithSource(
     if (Array.isArray(savedAlbums)) {
       for (const savedAlbum of savedAlbums) {
         try {
+
+          await new Promise(resolve => setTimeout(resolve, 100)) // 100ms delay
+
           const albumTracksResponse = await fetch(`${baseUrl}/api/spotify/album/${savedAlbum.id}/tracks`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
           })
@@ -127,13 +128,12 @@ export async function fetchPlayerSongsWithSource(
           const albumTracks = Array.isArray(albumTracksData) ? albumTracksData : (albumTracksData.items || [])
           
           albumTracks.forEach((track: any) => {
-            if (track && track.preview_url && !seenSongIds.has(track.id)) {
+            if (track && track.id && !seenSongIds.has(track.id)) {
               seenSongIds.add(track.id)
               songs.push({
                 id: track.id,
                 name: track.name,
                 artists: track.artists,
-                preview_url: track.preview_url,
                 album: savedAlbum.name,
                 owners: [{
                   playerId,

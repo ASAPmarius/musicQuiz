@@ -51,7 +51,12 @@ export default function TestMixer() {
             {mixedSongs.slice(0, 10).map(song => (
               <div key={song.id} className="border p-2 rounded">
                 <div className="font-bold">{song.name}</div>
-                <div className="text-sm text-gray-600">{song.artists}</div>
+                <div className="text-sm text-gray-600">
+                  {Array.isArray(song.artists) 
+                    ? song.artists.map((artist: { name: string }) => artist.name).join(', ')
+                    : song.artists
+                  }
+                </div>
                 <div className="text-xs mt-1">
                   Owned by: {song.owners.map((o: any) => 
                     `${o.playerName} (${o.source.type}: ${o.source.name})`
