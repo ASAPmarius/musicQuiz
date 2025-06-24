@@ -79,20 +79,27 @@ model VerificationToken {
 
 // Game model - represents a quiz session
 model Game {
-  id          String   @id @default(cuid())
-  code        String   @unique // 6-digit room code like "ABC123"
+  id          String     @id @default(cuid())
+  code        String     @unique // 6-digit room code like "ABC123"
   hostId      String
   status      GameStatus @default(WAITING)
-  maxPlayers  Int      @default(8)
-  roundCount  Int      @default(10)
+  maxPlayers  Int        @default(8)
+  roundCount  Int        @default(10)
+  
+  players     Json       @default("[]") // Array of player objects
+  
+  settings    Json       @default("{}") // Store game configuration
+  
+  currentRound Int       @default(0)
+  songCache    Json      @default("[]") // Cache mixed songs between games
   
   // Relationships
-  host        User     @relation("GameHost", fields: [hostId], references: [id])
+  host        User       @relation("GameHost", fields: [hostId], references: [id])
   rounds      Round[]
   scores      Score[]
   
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 
   @@map("games")
 }

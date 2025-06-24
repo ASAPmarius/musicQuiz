@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "games" ADD COLUMN     "currentRound" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "players" JSONB NOT NULL DEFAULT '[]',
+ADD COLUMN     "settings" JSONB NOT NULL DEFAULT '{}',
+ADD COLUMN     "songCache" JSONB NOT NULL DEFAULT '[]';
