@@ -31,6 +31,30 @@ const {
 } = useSocket(gameCode)
 
 useEffect(() => {
+  if (!socket) return
+  
+  const handleGameUpdate = (data: any) => {
+    console.log('🎮 Received game update:', data)
+    
+    if (data.action === 'player-joined') {
+      console.log('👥 Someone joined, refreshing game data...')
+      fetchGameDetails(gameCode)
+    }
+    // 🆕 ADD THIS - Handle ready status changes
+    else if (data.action === 'player-ready-changed') {
+      console.log('✅ Player ready status changed, refreshing game data...')
+      fetchGameDetails(gameCode)
+    }
+  }
+  
+  socket.on('game-updated', handleGameUpdate)
+  
+  return () => {
+    socket.off('game-updated', handleGameUpdate)
+  }
+}, [socket, gameCode])
+
+useEffect(() => {
   console.log('🎯 Extracting gameCode from params...')
   params.then(resolvedParams => {
     const extractedCode = resolvedParams.code.toUpperCase()
@@ -53,18 +77,19 @@ useEffect(() => {
 }, [session, gameCode])
 
 // Fetch game details
-const fetchGameDetails = async () => {
-  console.log('🔍 fetchGameDetails called with gameCode:', gameCode)
+const fetchGameDetails = async (codeToUse?: string) => {    
+  const currentGameCode = codeToUse || gameCode
+  console.log('🔍 fetchGameDetails called with gameCode:', currentGameCode)
   
-  if (!gameCode || gameCode.length !== 6) {
+  if (!currentGameCode || currentGameCode.length !== 6) {
     console.log('⚠️ Invalid gameCode, stopping loading')
     setLoading(false)
     return
   }
 
   try {
-    console.log('📡 Making API call to:', `/api/game/${gameCode}`)
-    const response = await fetch(`/api/game/${gameCode}`)
+    console.log('📡 Making API call to:', `/api/game/${currentGameCode}`)
+    const response = await fetch(`/api/game/${currentGameCode}`)
     
     if (!response.ok) {
       const errorText = await response.text()

@@ -54,6 +54,12 @@ export function useSocket(gameCode?: string) {
       setIsConnected(false)
     })
 
+    newSocket.on('game-updated', (data) => {
+      console.log('🎮 Game updated:', data)
+      // This will be handled by the game page component
+      // We just log it here for debugging
+    })
+
     // Listen for player status updates
     newSocket.on('player-status-updated', (data) => {
       console.log('🔄 Player status updated:', data)
