@@ -84,7 +84,7 @@ model Game {
   hostId      String
   status      GameStatus @default(WAITING)
   maxPlayers  Int        @default(8)
-  roundCount  Int        @default(10)
+  targetScore  Int        @default(30)
   
   players     Json       @default("[]") // Array of player objects
   

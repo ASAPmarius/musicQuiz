@@ -57,7 +57,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         code: game.code,
         status: game.status,
         maxPlayers: game.maxPlayers,
-        roundCount: game.roundCount,
+        targetScore: game.targetScore,
         currentRound: game.currentRound,
         currentPlayers: currentPlayers.length,
         players: currentPlayers,

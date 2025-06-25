@@ -284,7 +284,7 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Rounds:</span>
-                  <span className="font-medium">{game.roundCount}</span>
+                  <span className="font-medium">{game.targetScore}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Status:</span>

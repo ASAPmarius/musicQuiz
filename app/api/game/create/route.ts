@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { 
       maxPlayers = 8, 
-      roundCount = 10,
+      targetScore = 10,
       displayName = session.user.name || 'Host'
     } = body
 
@@ -34,8 +34,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Max players must be between 2 and 20' }, { status: 400 })
     }
 
-    if (roundCount < 5 || roundCount > 50) {
-      return NextResponse.json({ error: 'Round count must be between 5 and 50' }, { status: 400 })
+    if (targetScore < 15 || targetScore > 100) {
+      return NextResponse.json({ error: 'Target score must be between 15 and 100' }, { status: 400 })
     }
 
     // Generate unique room code
@@ -79,11 +79,11 @@ export async function POST(request: NextRequest) {
         hostId: session.user.id,
         status: 'WAITING',
         maxPlayers,
-        roundCount,
+        targetScore,
         players: playersToJSON([hostPlayer]), // Convert to JSON
         settings: {
           maxPlayers,
-          roundCount,
+          targetScore,
           createdAt: new Date().toISOString()
         },
         currentRound: 0,
@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
         code: game.code,
         status: game.status,
         maxPlayers: game.maxPlayers,
-        roundCount: game.roundCount,
+        targetScore: game.targetScore,
         currentPlayers: 1,
         players: game.players,
         host: game.host,

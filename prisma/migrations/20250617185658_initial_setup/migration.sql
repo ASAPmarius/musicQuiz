@@ -58,7 +58,7 @@ CREATE TABLE "games" (
     "hostId" TEXT NOT NULL,
     "status" "GameStatus" NOT NULL DEFAULT 'WAITING',
     "maxPlayers" INTEGER NOT NULL DEFAULT 8,
-    "roundCount" INTEGER NOT NULL DEFAULT 10,
+    "targetScore" INTEGER NOT NULL DEFAULT 10,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 

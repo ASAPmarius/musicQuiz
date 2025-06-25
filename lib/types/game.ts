@@ -20,12 +20,12 @@ export interface GameData {
   code: string
   status: 'WAITING' | 'PLAYING' | 'FINISHED' | 'CANCELLED'
   maxPlayers: number
-  roundCount: number
+  targetScore: number
   currentPlayers: number
   players: LobbyPlayer[]
   settings: {
     maxPlayers: number
-    roundCount: number
+    targetScore: number
     createdAt: string
   }
   songCache: Song[]

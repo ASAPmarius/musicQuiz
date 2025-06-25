@@ -13,7 +13,7 @@ export default function CreateGame() {
   // Game settings
   const [displayName, setDisplayName] = useState(session?.user?.name || '')
   const [maxPlayers, setMaxPlayers] = useState(6)
-  const [roundCount, setRoundCount] = useState(15)
+  const [targetScore, settargetScore] = useState(15)
 
   const handleCreateGame = async () => {
     if (!session) {
@@ -38,7 +38,7 @@ export default function CreateGame() {
         body: JSON.stringify({
           displayName: displayName.trim(),
           maxPlayers,
-          roundCount
+          targetScore
         })
       })
 
@@ -147,20 +147,20 @@ export default function CreateGame() {
             {/* Round Count */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Number of Rounds: {roundCount}
+                Points to Win: {targetScore}
               </label>
               <input
                 type="range"
-                min="5"
-                max="30"
+                min="15"
+                max="50"
                 step="5"
-                value={roundCount}
-                onChange={(e) => setRoundCount(Number(e.target.value))}
+                value={targetScore}
+                onChange={(e) => settargetScore(Number(e.target.value))}
                 className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
               />
               <div className="flex justify-between text-xs text-gray-500 mt-1">
-                <span>5 rounds</span>
-                <span>30 rounds</span>
+                <span>15 points</span>
+                <span>50 points</span>
               </div>
             </div>
 
