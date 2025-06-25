@@ -70,6 +70,32 @@ app.prepare().then(() => {
       })
     })
 
+    socket.on('player-joined-game', (data) => {
+    const { gameCode, playerData } = data
+    console.log(`👥 Player joined ${gameCode}:`, playerData.displayName)
+    
+    // Broadcast to all players that someone joined
+    io.to(gameCode).emit('game-updated', {
+      action: 'player-joined',
+      playerData,
+      timestamp: new Date().toISOString()
+    })
+  })
+
+  socket.on('player-ready-changed', (data) => {
+    const { gameCode, userId, isReady, playerData } = data
+    console.log(`✅ Player ready status changed in ${gameCode}:`, isReady)
+    
+    // Broadcast to all players
+    io.to(gameCode).emit('game-updated', {
+      action: 'player-ready-changed',
+      userId,
+      isReady,
+      playerData,
+      timestamp: new Date().toISOString()
+    })
+  })
+
     // Game state changes (start round, voting, etc.)
     socket.on('game-action', (data) => {
       const { gameCode, action, payload } = data

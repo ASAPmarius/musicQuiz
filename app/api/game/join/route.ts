@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
 import { LobbyPlayer, parsePlayersFromJSON, playersToJSON } from '@/lib/types/game'
+import { Server } from 'socket.io'
 
 export async function POST(request: NextRequest) {
   try {
@@ -121,6 +122,21 @@ export async function POST(request: NextRequest) {
         }
       }
     })
+
+    try {
+      // Emit socket event for real-time updates
+      const io = (global as any).io as Server
+      if (io) {
+        io.to(gameCode.toUpperCase()).emit('game-updated', {
+          action: 'player-joined',
+          playerData: newPlayer,
+          timestamp: new Date().toISOString()
+        })
+      }
+    } catch (error) {
+      // Socket emission failed, but that's ok - the join still succeeded
+      console.warn('Failed to emit socket event:', error)
+    }
 
     return NextResponse.json({
       success: true,

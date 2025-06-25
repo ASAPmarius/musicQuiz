@@ -18,7 +18,8 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const gameCode = params.code.toUpperCase()
+    const resolvedParams = await params
+  const gameCode = resolvedParams.code.toUpperCase()
 
     // Find the game
     const game = await prisma.game.findUnique({
@@ -86,7 +87,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const gameCode = params.code.toUpperCase()
+    const resolvedParams = await params
+    const gameCode = resolvedParams.code.toUpperCase()
     const body = await request.json()
     const { playerUpdate } = body
 

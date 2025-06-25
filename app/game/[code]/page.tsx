@@ -23,41 +23,72 @@ export default function GameLobby({ params }: GameLobbyProps) {
   const [currentPlayer, setCurrentPlayer] = useState<LobbyPlayer | null>(null)
 
   // Socket.io connection for real-time updates
-  const { 
-    isConnected, 
-    updatePlayerStatus, 
-    sendGameAction 
-  } = useSocket(gameCode)
+const { 
+  isConnected, 
+  updatePlayerStatus, 
+  sendGameAction,
+  socket  // Add this to access socket directly
+} = useSocket(gameCode)
 
-  // Extract gameCode from async params
-  useEffect(() => {
-    params.then(resolvedParams => {
-      setGameCode(resolvedParams.code.toUpperCase())
-    })
-  }, [params])
+useEffect(() => {
+  console.log('🎯 Extracting gameCode from params...')
+  params.then(resolvedParams => {
+    const extractedCode = resolvedParams.code.toUpperCase()
+    console.log('✅ GameCode extracted:', extractedCode)
+    setGameCode(extractedCode)
+  }).catch(err => {
+    console.error('❌ Failed to extract params:', err)
+    setLoading(false)
+  })
+}, [params])
 
-  // Fetch game details
-  const fetchGameDetails = async () => {
-    try {
-      const response = await fetch(`/api/game/${gameCode}`)
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch game')
-      }
-
-      setGame(data.game)
-      
-      // Find current player
-      const player = data.game.players.find((p: LobbyPlayer) => p.userId === session?.user?.id)
-      setCurrentPlayer(player || null)
-
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load game')
-    } finally {
-      setLoading(false)
-    }
+// Load game on mount (only when we have gameCode)
+useEffect(() => {
+  console.log('🔄 Fetch trigger - session:', !!session, 'gameCode:', gameCode)
+  
+  if (session && gameCode) {
+    console.log('🚀 Triggering fetchGameDetails...')
+    fetchGameDetails()
   }
+}, [session, gameCode])
+
+// Fetch game details
+const fetchGameDetails = async () => {
+  console.log('🔍 fetchGameDetails called with gameCode:', gameCode)
+  
+  if (!gameCode || gameCode.length !== 6) {
+    console.log('⚠️ Invalid gameCode, stopping loading')
+    setLoading(false)
+    return
+  }
+
+  try {
+    console.log('📡 Making API call to:', `/api/game/${gameCode}`)
+    const response = await fetch(`/api/game/${gameCode}`)
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ API Error:', response.status, errorText)
+      throw new Error(`Server error: ${response.status}`)
+    }
+    
+    const data = await response.json()
+    console.log('✅ Received game data:', data.game)
+    
+    setGame(data.game)
+    
+    // Find current player
+    const player = data.game.players.find((p: LobbyPlayer) => p.userId === session?.user?.id)
+    setCurrentPlayer(player || null)
+
+  } catch (err) {
+    console.error('❌ Fetch error:', err)
+    setError(err instanceof Error ? err.message : 'Failed to load game')
+  } finally {
+    console.log('🏁 Setting loading to false')
+    setLoading(false)
+  }
+}
 
   // Update player status in database
   const updatePlayerInDB = async (updates: Partial<LobbyPlayer>) => {
@@ -92,7 +123,6 @@ export default function GameLobby({ params }: GameLobbyProps) {
     }
   }
 
-  // Handle ready status toggle
   const handleReadyToggle = async () => {
     if (!currentPlayer) return
 
@@ -103,11 +133,18 @@ export default function GameLobby({ params }: GameLobbyProps) {
     const updatedPlayer = { ...currentPlayer, isReady: newReadyStatus }
     setCurrentPlayer(updatedPlayer)
 
-    // Update other players via socket
-    updatePlayerStatus(updates)
-
     // Update database
     await updatePlayerInDB(updates)
+
+    // Notify other players via socket (with null check)
+    if (socket && gameCode) {
+      socket.emit('player-ready-changed', {
+        gameCode,
+        userId: currentPlayer.userId,
+        isReady: newReadyStatus,
+        playerData: updatedPlayer
+      })
+    }
   }
 
   // Handle start game (host only)
