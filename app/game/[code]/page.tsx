@@ -283,7 +283,7 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
                   <span className="font-medium">{game.players.length}/{game.maxPlayers}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-600">Rounds:</span>
+                  <span className="text-gray-600">Points to win:</span>
                   <span className="font-medium">{game.targetScore}</span>
                 </div>
                 <div className="flex justify-between">
