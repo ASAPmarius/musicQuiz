@@ -5,6 +5,7 @@ import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { useSocket } from '@/lib/useSocket'
 import { LobbyPlayer, GameData } from '@/lib/types/game'
+import DeviceSelectionModal from '@/components/DeviceSelectionModal'
 
 interface GameLobbyProps {
   params: Promise<{
@@ -21,6 +22,7 @@ export default function GameLobby({ params }: GameLobbyProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>('')
   const [currentPlayer, setCurrentPlayer] = useState<LobbyPlayer | null>(null)
+  const [showDeviceModal, setShowDeviceModal] = useState(false)
 
   // Socket.io connection for real-time updates
 const { 
@@ -128,25 +130,28 @@ const fetchGameDetails = async (codeToUse?: string) => {
     }
   }
 
-  // Handle device selection
-  const handleDeviceSelect = async (deviceId: string | null, deviceName: string) => {
-    const updates = {
-      spotifyDeviceId: deviceId,
-      deviceName: deviceName
-    }
-
-    // Update local state
-    if (currentPlayer) {
-      const updatedPlayer = { ...currentPlayer, ...updates }
-      setCurrentPlayer(updatedPlayer)
-
-      // Update other players via socket
-      updatePlayerStatus(updates)
-
-      // Update database
-      await updatePlayerInDB(updates)
-    }
+// Handle device selection
+const handleDeviceSelect = async (deviceId: string | null, deviceName: string) => {
+  const updates = {
+    spotifyDeviceId: deviceId,
+    deviceName: deviceName
   }
+
+  // Update local state immediately (for instant feedback)
+  if (currentPlayer) {
+    const updatedPlayer = { ...currentPlayer, ...updates }
+    setCurrentPlayer(updatedPlayer)
+
+    // Update other players via socket
+    updatePlayerStatus(updates)
+
+    // Update database
+    await updatePlayerInDB(updates)
+    
+    // 🆕 ADD THIS: Refresh game state from database to get the latest data
+    await fetchGameDetails()
+  }
+}
 
   const handleReadyToggle = async () => {
     if (!currentPlayer) return
@@ -192,13 +197,6 @@ const fetchGameDetails = async (codeToUse?: string) => {
     navigator.clipboard.writeText(gameCode)
     alert('Room code copied to clipboard!')
   }
-
-  // Load game on mount (only when we have gameCode)
-  useEffect(() => {
-    if (session && gameCode) {
-      fetchGameDetails()
-    }
-  }, [session, gameCode])
 
   if (!session) {
     return (
@@ -300,10 +298,10 @@ const fetchGameDetails = async (codeToUse?: string) => {
                 <div className="text-sm">
                   <div className="font-medium">{currentPlayer?.deviceName || 'No device selected'}</div>
                   <button 
-                    onClick={() => alert('Device selection coming soon!')}
-                    className="text-purple-600 hover:text-purple-800 mt-1"
+                    onClick={() => setShowDeviceModal(true)}
+                    className="text-purple-600 hover:text-purple-800 mt-1 underline"
                   >
-                    Change Device
+                    {currentPlayer?.spotifyDeviceId ? 'Change Device' : 'Select Device'}
                   </button>
                 </div>
               </div>
@@ -407,6 +405,15 @@ const fetchGameDetails = async (codeToUse?: string) => {
                   <p className="text-sm text-gray-500">Share this room code: <strong>{gameCode}</strong></p>
                 </div>
               )}
+
+              {/* Device Selection Modal */}
+              <DeviceSelectionModal
+                isOpen={showDeviceModal}
+                onClose={() => setShowDeviceModal(false)}
+                onDeviceSelect={handleDeviceSelect}
+                currentDeviceId={currentPlayer?.spotifyDeviceId || null}
+                currentDeviceName={currentPlayer?.deviceName || 'No device selected'}
+              />
             </div>
           </div>
         </div>
