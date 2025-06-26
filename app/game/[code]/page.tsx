@@ -177,17 +177,15 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
     }
   }
 
-  // Handle start game (host only)
-  const handleStartGame = () => {
+  const handleContinueToSongLoading = () => {
     if (currentPlayer?.isHost && game) {
       const allPlayersReady = game.players.every(p => p.isReady)
       
       if (allPlayersReady) {
-        sendGameAction('start-game', { gameCode })
-        // Navigate to actual game
-        router.push(`/game/${gameCode}/play`)
+        // Navigate to song loading phase
+        router.push(`/game/${gameCode}/loading`)
       } else {
-        alert('All players must be ready before starting!')
+        alert('All players must be ready before continuing!')
       }
     }
   }
@@ -322,19 +320,17 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
 
               {/* Start Game (Host Only) */}
               {currentPlayer?.isHost && (
-                <div className="mt-4">
+                <div className="text-center">
                   <button
-                    onClick={handleStartGame}
+                    onClick={handleContinueToSongLoading}
                     disabled={!game.players.every(p => p.isReady)}
-                    className="w-full bg-gradient-to-r from-purple-500 to-blue-500 text-white py-3 px-4 rounded-lg font-semibold hover:from-purple-600 hover:to-blue-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="bg-blue-600 text-white px-8 py-3 rounded-lg text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    🚀 Start Game
+                    {game.players.every(p => p.isReady) 
+                      ? 'Continue to Song Loading' 
+                      : 'Waiting for all players to be ready...'
+                    }
                   </button>
-                  {!game.players.every(p => p.isReady) && (
-                    <p className="text-xs text-gray-500 mt-2 text-center">
-                      All players must be ready to start
-                    </p>
-                  )}
                 </div>
               )}
             </div>
