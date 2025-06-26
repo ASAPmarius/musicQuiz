@@ -42,19 +42,35 @@ useEffect(() => {
       console.log('👥 Someone joined, refreshing game data...')
       fetchGameDetails(gameCode)
     }
-    // 🆕 ADD THIS - Handle ready status changes
     else if (data.action === 'player-ready-changed') {
       console.log('✅ Player ready status changed, refreshing game data...')
       fetchGameDetails(gameCode)
     }
+    // 🆕 ADD THIS - Handle song loading phase started
+    else if (data.action === 'song-loading-phase-started') {
+      console.log('🎵 Song loading phase started, navigating...')
+      router.push(`/game/${gameCode}/loading`)
+    }
+  }
+
+  const handleGameStateChanged = (data: any) => {
+    console.log('🔄 Game state changed:', data)
+    
+    // Handle song loading phase started via game-state-changed
+    if (data.action === 'song-loading-phase-started') {
+      console.log('🎵 Song loading phase started, navigating...')
+      router.push(`/game/${gameCode}/loading`)
+    }
   }
   
   socket.on('game-updated', handleGameUpdate)
+  socket.on('game-state-changed', handleGameStateChanged)
   
   return () => {
     socket.off('game-updated', handleGameUpdate)
+    socket.off('game-state-changed', handleGameStateChanged)
   }
-}, [socket, gameCode])
+}, [socket, gameCode, router])
 
 useEffect(() => {
   console.log('🎯 Extracting gameCode from params...')
@@ -182,7 +198,12 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
       const allPlayersReady = game.players.every(p => p.isReady)
       
       if (allPlayersReady) {
-        // Navigate to song loading phase
+        // Use your existing sendGameAction function
+        sendGameAction('song-loading-phase-started', { 
+          hostId: currentPlayer.userId 
+        })
+        
+        // Navigate host to song loading phase
         router.push(`/game/${gameCode}/loading`)
       } else {
         alert('All players must be ready before continuing!')

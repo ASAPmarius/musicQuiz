@@ -98,6 +98,59 @@ app.prepare().then(() => {
     })
   })
 
+  socket.on('player-playlists-selected', (data) => {
+    const { gameCode, userId, playlistCount } = data
+    console.log(`📋 Player ${userId} selected ${playlistCount} playlists in ${gameCode}`)
+    
+    // Broadcast to all players in the game
+    io.to(gameCode).emit('game-updated', {
+      action: 'player-playlists-selected',
+      userId,
+      playlistCount,
+      timestamp: new Date().toISOString()
+    })
+  })
+
+  // Handle song loading progress updates
+  socket.on('player-loading-progress', (data) => {
+    const { gameCode, userId, progress } = data
+    console.log(`⏳ Player ${userId} loading progress: ${progress}% in ${gameCode}`)
+    
+    // Broadcast to all players in the game
+    io.to(gameCode).emit('game-updated', {
+      action: 'player-loading-progress',
+      userId,
+      progress,
+      timestamp: new Date().toISOString()
+    })
+  })
+
+  // Handle when a player finishes loading songs
+  socket.on('player-songs-ready', (data) => {
+    const { gameCode, userId, songCount } = data
+    console.log(`✅ Player ${userId} finished loading ${songCount} songs in ${gameCode}`)
+    
+    // Broadcast to all players in the game
+    io.to(gameCode).emit('game-updated', {
+      action: 'player-songs-ready',
+      userId,
+      songCount,
+      timestamp: new Date().toISOString()
+    })
+  })
+
+  // Handle game start from song loading phase
+  socket.on('start-quiz-game', (data) => {
+    const { gameCode } = data
+    console.log(`🚀 Starting quiz game in room ${gameCode}`)
+    
+    // Broadcast to all players that the game is starting
+    io.to(gameCode).emit('game-updated', {
+      action: 'quiz-game-starting',
+      timestamp: new Date().toISOString()
+    })
+  })
+
     // Game state changes (start round, voting, etc.)
     socket.on('game-action', (data) => {
       const { gameCode, action, payload } = data
