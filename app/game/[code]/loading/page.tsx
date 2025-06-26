@@ -26,6 +26,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
   const [gameCode, setGameCode] = useState<string>('')
   const [game, setGame] = useState<GameData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string>('')
   const [currentPlayer, setCurrentPlayer] = useState<LobbyPlayer | null>(null)
   
   // Playlist selection state (for current player)
@@ -38,15 +39,26 @@ export default function SongLoading({ params }: SongLoadingProps) {
 
   // Extract game code from params
   useEffect(() => {
-    params.then(resolvedParams => {
-      const extractedCode = resolvedParams.code.toUpperCase()
-      setGameCode(extractedCode)
-    })
+    async function extractGameCode() {
+      try {
+        const resolvedParams = await params
+        const extractedCode = resolvedParams.code.toUpperCase()
+        console.log('🎯 Extracted gameCode:', extractedCode)
+        setGameCode(extractedCode)
+      } catch (err) {
+        console.error('❌ Failed to extract game code:', err)
+        setLoading(false)
+      }
+    }
+    
+    extractGameCode()
   }, [params])
 
   // Fetch game details when we have session and game code
   useEffect(() => {
     if (session && gameCode) {
+      console.log('🚀 Starting to fetch game details...')
+      setError('') // Clear any previous errors
       fetchGameDetails()
     }
   }, [session, gameCode])
@@ -56,10 +68,14 @@ export default function SongLoading({ params }: SongLoadingProps) {
     if (!socket) return
     
     const handleGameUpdate = (data: any) => {
+      console.log('🔔 Received game update:', data)
       if (data.action === 'player-playlists-selected' || 
           data.action === 'player-loading-progress' ||
           data.action === 'player-songs-ready') {
-        fetchGameDetails()
+        console.log('🔄 Refreshing game data due to update...')
+        if (gameCode) {
+          fetchGameDetails()
+        }
       }
     }
     
@@ -67,31 +83,54 @@ export default function SongLoading({ params }: SongLoadingProps) {
     return () => {
       socket.off('game-updated', handleGameUpdate)
     }
-  }, [socket])
+  }, [socket, gameCode]) // Add gameCode as dependency
 
   const fetchGameDetails = async () => {
+    if (!gameCode) {
+      console.error('❌ No gameCode available for API call')
+      setLoading(false)
+      return
+    }
+    
+    setLoading(true) // Make sure we show loading state
+    
     try {
+      console.log('🔄 Fetching game details for code:', gameCode)
       const response = await fetch(`/api/game/${gameCode}`)
-      if (!response.ok) throw new Error('Game not found')
+      
+      console.log('📡 API Response status:', response.status)
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('❌ API Error:', response.status, errorText)
+        throw new Error(`Game not found (${response.status})`)
+      }
       
       const apiResponse = await response.json()
+      console.log('✅ API Response:', apiResponse)
       
       // Handle the actual API response structure: { success: true, game: {...} }
       if (!apiResponse.success || !apiResponse.game) {
+        console.error('❌ Invalid API response structure:', apiResponse)
         throw new Error('Invalid API response')
       }
       
       const gameData: GameData = apiResponse.game
+      console.log('🎮 Game data loaded:', gameData)
       setGame(gameData)
       
       const player = gameData.players?.find(p => p.userId === session?.user?.id)
       if (player) {
+        console.log('👤 Current player found:', player)
         setCurrentPlayer(player)
         // Restore selected playlists from database
         setSelectedPlaylistIds(new Set(player.playlistsSelected || []))
+      } else {
+        console.error('❌ Current player not found in game')
       }
     } catch (err) {
-      console.error('Failed to load game:', err)
+      console.error('💥 Failed to load game:', err)
+      setError(err instanceof Error ? err.message : 'Failed to load game')
     } finally {
       setLoading(false)
     }
@@ -231,7 +270,31 @@ export default function SongLoading({ params }: SongLoadingProps) {
   }
 
   if (loading) {
-    return <div className="p-8">Loading game...</div>
+    return (
+      <div className="p-8 text-center">
+        <div className="text-lg">Loading game...</div>
+        {gameCode && <div className="text-sm text-gray-600 mt-2">Game Code: {gameCode}</div>}
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="p-8 text-center">
+        <div className="text-red-600 text-lg mb-4">❌ {error}</div>
+        <div className="text-sm text-gray-600 mb-4">Game Code: {gameCode}</div>
+        <button 
+          onClick={() => {
+            setError('')
+            setLoading(true)
+            if (gameCode) fetchGameDetails()
+          }}
+          className="bg-blue-500 text-white px-4 py-2 rounded"
+        >
+          Try Again
+        </button>
+      </div>
+    )
   }
 
   if (!game || !currentPlayer) {
