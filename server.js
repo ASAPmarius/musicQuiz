@@ -98,6 +98,7 @@ app.prepare().then(() => {
     })
   })
 
+  // Handle playlist selection updates
   socket.on('player-playlists-selected', (data) => {
     const { gameCode, userId, playlistCount } = data
     console.log(`📋 Player ${userId} selected ${playlistCount} playlists in ${gameCode}`)
@@ -111,23 +112,24 @@ app.prepare().then(() => {
     })
   })
 
-  // Handle song loading progress updates
+  // Handle song loading progress updates with messages
   socket.on('player-loading-progress', (data) => {
-    const { gameCode, userId, progress } = data
-    console.log(`⏳ Player ${userId} loading progress: ${progress}% in ${gameCode}`)
+    const { gameCode, userId, progress, message } = data
+    console.log(`⏳ Player ${userId} loading progress: ${progress}% in ${gameCode}${message ? ` - ${message}` : ''}`)
     
     // Broadcast to all players in the game
     io.to(gameCode).emit('game-updated', {
       action: 'player-loading-progress',
       userId,
       progress,
+      message,
       timestamp: new Date().toISOString()
     })
   })
 
   // Handle when a player finishes loading songs
   socket.on('player-songs-ready', (data) => {
-    const { gameCode, userId, songCount } = data
+    const { gameCode, userId, songCount, breakdown } = data
     console.log(`✅ Player ${userId} finished loading ${songCount} songs in ${gameCode}`)
     
     // Broadcast to all players in the game
@@ -135,6 +137,7 @@ app.prepare().then(() => {
       action: 'player-songs-ready',
       userId,
       songCount,
+      breakdown,
       timestamp: new Date().toISOString()
     })
   })

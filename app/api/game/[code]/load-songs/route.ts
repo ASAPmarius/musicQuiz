@@ -9,22 +9,32 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
 ) {
+  // Declare all variables at function scope to avoid scoping issues
+  let session: any = null
+  let game: any = null
+  let gameCode: string = ''
+  let currentPlayer: any = null
+  let players: any[] = []
+  
   try {
-    const session = await getServerSession(authOptions)
+    // 1. Authentication
+    session = await getServerSession(authOptions)
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { code } = await params
+    // 2. Extract parameters
+    const resolvedParams = await params
+    gameCode = resolvedParams.code.toUpperCase()
     const { selectedPlaylistIds } = await request.json()
 
     if (!selectedPlaylistIds || !Array.isArray(selectedPlaylistIds)) {
       return NextResponse.json({ error: 'Invalid playlist IDs' }, { status: 400 })
     }
 
-    // Find the game
-    const game = await prisma.game.findUnique({
-      where: { code: code.toUpperCase() },
+    // 3. Find the game
+    game = await prisma.game.findUnique({
+      where: { code: gameCode },
       include: { host: true }
     })
 
@@ -32,79 +42,225 @@ export async function POST(
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Get current players and find the requesting player
-    const players = parsePlayersFromJSON(game.players)
+    // 4. Find the requesting player
+    players = parsePlayersFromJSON(game.players)
     const playerIndex = players.findIndex(p => p.userId === session.user.id)
     
     if (playerIndex === -1) {
       return NextResponse.json({ error: 'Player not in game' }, { status: 403 })
     }
 
-    const currentPlayer = players[playerIndex]
+    currentPlayer = players[playerIndex]
 
-    // Get access token from session
+    // 5. Get access token
     const accessToken = (session as any).accessToken
     if (!accessToken) {
       return NextResponse.json({ error: 'No Spotify access token' }, { status: 401 })
     }
 
-    // Update player status to show loading started
-    currentPlayer.loadingProgress = 0
-    await prisma.game.update({
-      where: { id: game.id },
-      data: { players: playersToJSON(players) }
-    })
-
-    // Emit progress update via Socket.io
     const io = (global as any).io
-    if (io) {
-      io.to(code.toUpperCase()).emit('game-updated', {
-        action: 'player-loading-progress',
-        userId: session.user.id,
-        progress: 0,
-        timestamp: new Date().toISOString()
+    const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000'
+
+    // Helper function to update progress
+    const updateProgress = async (progress: number, message?: string) => {
+      currentPlayer.loadingProgress = progress
+      await prisma.game.update({
+        where: { id: game.id },
+        data: { players: playersToJSON(players) }
       })
+
+      if (io) {
+        io.to(gameCode).emit('game-updated', {
+          action: 'player-loading-progress',
+          userId: session.user.id,
+          progress,
+          message,
+          timestamp: new Date().toISOString()
+        })
+      }
     }
 
-    // Fetch songs using your existing function
-    console.log(`🎵 Loading songs for ${currentPlayer.displayName} from ${selectedPlaylistIds.length} playlists`)
+    // 6. Start loading process
+    await updateProgress(5, 'Analyzing your music library...')
     
-    const songs = await fetchPlayerSongsFromSelection(
-      currentPlayer.userId,
-      currentPlayer.displayName,
-      accessToken,
-      selectedPlaylistIds
-    )
-
-    // Update progress to 50% (fetching complete, now processing)
-    currentPlayer.loadingProgress = 50
-    await prisma.game.update({
-      where: { id: game.id },
-      data: { players: playersToJSON(players) }
-    })
-
-    if (io) {
-      io.to(code.toUpperCase()).emit('game-updated', {
-        action: 'player-loading-progress',
-        userId: session.user.id,
-        progress: 50,
-        timestamp: new Date().toISOString()
+    // Get playlist details for estimation
+    let allPlaylists: any[] = []
+    let totalExpectedSongs = 0
+    
+    try {
+      const playlistsResponse = await fetch(`${baseUrl}/api/spotify/playlists`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
       })
+      
+      if (playlistsResponse.ok) {
+        allPlaylists = await playlistsResponse.json()
+        const selectedPlaylists = allPlaylists.filter((p: any) => selectedPlaylistIds.includes(p.id))
+        totalExpectedSongs = selectedPlaylists.reduce((sum: number, p: any) => sum + (p.tracks?.total || 0), 0)
+      }
+    } catch (playlistFetchError) {
+      console.error('Error fetching playlists:', playlistFetchError)
     }
 
-    // Store songs in the game's song cache
-    // Note: In a real implementation, you might want to merge songs from all players
+    // Add estimates for liked songs and albums
+    totalExpectedSongs += 500 // Conservative estimate
+
+    await updateProgress(15, `Found ~${totalExpectedSongs} songs to process`)
+
+    // 7. Load songs from different sources
+    const songs: any[] = []
+    const seenSongIds = new Set<string>()
+
+    const updateSongProgress = async (processed: number, source: string) => {
+      const progress = Math.min(15 + Math.floor((processed / totalExpectedSongs) * 70), 85)
+      await updateProgress(progress, `Loading from ${source}... (${processed}/${totalExpectedSongs})`)
+    }
+
+    // Load liked songs
+    try {
+      console.log('🔄 Fetching liked songs...')
+      const likedResponse = await fetch(`${baseUrl}/api/spotify/liked-songs`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      })
+      
+      if (likedResponse.ok) {
+        const likedSongs = await likedResponse.json()
+        if (Array.isArray(likedSongs)) {
+          likedSongs.forEach((track: any) => {
+            if (track && track.id && !seenSongIds.has(track.id)) {
+              seenSongIds.add(track.id)
+              songs.push({
+                id: track.id,
+                name: track.name,
+                artists: track.artists,
+                album: track.album,
+                owners: [{
+                  playerId: session.user.id,
+                  playerName: currentPlayer.displayName,
+                  source: { type: 'liked', name: 'Liked Songs' }
+                }]
+              })
+            }
+          })
+          await updateSongProgress(songs.length, 'Liked Songs')
+        }
+      }
+    } catch (likedError) {
+      console.error('Error processing liked songs:', likedError)
+    }
+
+    // Load saved albums
+    try {
+      console.log('🔄 Fetching saved albums...')
+      const albumsResponse = await fetch(`${baseUrl}/api/spotify/saved-albums`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` }
+      })
+      
+      if (albumsResponse.ok) {
+        const savedAlbums = await albumsResponse.json()
+        if (Array.isArray(savedAlbums)) {
+          for (let i = 0; i < savedAlbums.length; i++) {
+            const savedAlbum = savedAlbums[i]
+            try {
+              const albumTracksResponse = await fetch(`${baseUrl}/api/spotify/album/${savedAlbum.id}/tracks`, {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+              })
+              
+              if (albumTracksResponse.ok) {
+                const albumTracksData = await albumTracksResponse.json()
+                const albumTracks = Array.isArray(albumTracksData) ? albumTracksData : (albumTracksData.items || [])
+                
+                albumTracks.forEach((track: any) => {
+                  if (track && track.id && !seenSongIds.has(track.id)) {
+                    seenSongIds.add(track.id)
+                    songs.push({
+                      id: track.id,
+                      name: track.name,
+                      artists: track.artists,
+                      album: savedAlbum.name,
+                      owners: [{
+                        playerId: session.user.id,
+                        playerName: currentPlayer.displayName,
+                        source: { 
+                          type: 'album', 
+                          name: savedAlbum.name,
+                          id: savedAlbum.id
+                        }
+                      }]
+                    })
+                  }
+                })
+                
+                if (i % 10 === 0) {
+                  await updateSongProgress(songs.length, `Saved Albums (${i + 1}/${savedAlbums.length})`)
+                }
+              }
+            } catch (albumError) {
+              console.error(`Error processing album ${savedAlbum.name}:`, albumError)
+            }
+          }
+        }
+      }
+    } catch (albumsError) {
+      console.error('Error processing saved albums:', albumsError)
+    }
+
+    // Load selected playlists
+    if (selectedPlaylistIds.length > 0) {
+      for (let i = 0; i < selectedPlaylistIds.length; i++) {
+        const playlistId = selectedPlaylistIds[i]
+        try {
+          const playlist = allPlaylists.find((p: any) => p.id === playlistId)
+          if (!playlist) continue
+
+          const tracksResponse = await fetch(`${baseUrl}/api/spotify/playlist/${playlistId}/tracks`, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+          })
+          
+          if (tracksResponse.ok) {
+            const tracksData = await tracksResponse.json()
+            const tracks = Array.isArray(tracksData) ? tracksData : (tracksData.items || [])
+            
+            tracks.forEach((track: any) => {
+              if (track && track.id && !seenSongIds.has(track.id)) {
+                seenSongIds.add(track.id)
+                songs.push({
+                  id: track.id,
+                  name: track.name,
+                  artists: track.artists,
+                  album: track.album,
+                  owners: [{
+                    playerId: session.user.id,
+                    playerName: currentPlayer.displayName,
+                    source: { 
+                      type: 'playlist', 
+                      name: playlist.name,
+                      id: playlist.id
+                    }
+                  }]
+                })
+              }
+            })
+            
+            await updateSongProgress(songs.length, `${playlist.name} (${i + 1}/${selectedPlaylistIds.length})`)
+          }
+        } catch (playlistError) {
+          console.error(`Error processing playlist ${playlistId}:`, playlistError)
+        }
+      }
+    }
+
+    // 8. Finalize
+    await updateProgress(90, 'Finalizing your music library...')
+
     let currentSongCache = []
     try {
       currentSongCache = game.songCache ? JSON.parse(game.songCache as string) : []
-    } catch {
+    } catch (cacheError) {
+      console.error('Error parsing existing song cache:', cacheError)
       currentSongCache = []
     }
 
-    // Add this player's songs to the cache
     const updatedSongCache = [...currentSongCache, ...songs]
-
-    // Update progress to 100% and mark as completed
     currentPlayer.loadingProgress = 100
     currentPlayer.songsLoaded = true
 
@@ -116,9 +272,8 @@ export async function POST(
       }
     })
 
-    // Final progress update via Socket.io
     if (io) {
-      io.to(code.toUpperCase()).emit('game-updated', {
+      io.to(gameCode).emit('game-updated', {
         action: 'player-songs-ready',
         userId: session.user.id,
         songCount: songs.length,
@@ -132,38 +287,43 @@ export async function POST(
     return NextResponse.json({ 
       success: true, 
       songCount: songs.length,
-      totalCachedSongs: updatedSongCache.length
+      totalCachedSongs: updatedSongCache.length,
+      breakdown: {
+        likedSongs: songs.filter(s => s.owners[0].source.type === 'liked').length,
+        savedAlbums: songs.filter(s => s.owners[0].source.type === 'album').length,
+        playlists: songs.filter(s => s.owners[0].source.type === 'playlist').length
+      }
     })
 
-  } catch (error) {
-    console.error('Error loading songs:', error)
+  } catch (mainError) {
+    console.error('Error loading songs:', mainError)
     
-    // Try to update player status to show error
+    // Reset player status on error
     try {
-      const session = await getServerSession(authOptions)
-      if (session?.user?.id) {
-        const { code } = await params
-        const game = await prisma.game.findUnique({
-          where: { code: code.toUpperCase() }
-        })
+      if (session?.user?.id && game && currentPlayer && players.length > 0) {
+        const playerIndex = players.findIndex(p => p.userId === session.user.id)
         
-        if (game) {
-          const players = parsePlayersFromJSON(game.players)
-          const playerIndex = players.findIndex(p => p.userId === session.user.id)
+        if (playerIndex !== -1) {
+          players[playerIndex].loadingProgress = 0
+          players[playerIndex].songsLoaded = false
           
-          if (playerIndex !== -1) {
-            players[playerIndex].loadingProgress = 0
-            players[playerIndex].songsLoaded = false
-            
-            await prisma.game.update({
-              where: { id: game.id },
-              data: { players: playersToJSON(players) }
+          await prisma.game.update({
+            where: { id: game.id },
+            data: { players: playersToJSON(players) }
+          })
+
+          const io = (global as any).io
+          if (io && gameCode) {
+            io.to(gameCode).emit('game-updated', {
+              action: 'player-loading-error',
+              userId: session.user.id,
+              timestamp: new Date().toISOString()
             })
           }
         }
       }
-    } catch (updateError) {
-      console.error('Failed to reset player status after error:', updateError)
+    } catch (resetError) {
+      console.error('Failed to reset player status after error:', resetError)
     }
 
     return NextResponse.json(
