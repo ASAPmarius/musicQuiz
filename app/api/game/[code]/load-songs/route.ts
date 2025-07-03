@@ -252,32 +252,80 @@ export async function POST(
     // 8. Finalize
     await updateProgress(90, 'Finalizing your music library...')
 
-    let currentSongCache = []
-    try {
-      currentSongCache = game.songCache ? JSON.parse(game.songCache as string) : []
-    } catch (cacheError) {
-      console.error('Error parsing existing song cache:', cacheError)
-      currentSongCache = []
-    }
-
-    const updatedSongCache = [...currentSongCache, ...songs]
+    // Update player status
     currentPlayer.loadingProgress = 100
     currentPlayer.songsLoaded = true
 
-    await prisma.game.update({
-      where: { id: game.id },
-      data: { 
-        players: playersToJSON(players),
-        songCache: JSON.stringify(updatedSongCache)
+    // Use transaction to update both player status and songs
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Update player status in game
+      const latestGame = await tx.game.findUnique({
+        where: { id: game.id }
+      })
+      
+      if (!latestGame) {
+        throw new Error('Game not found')
       }
+      
+      const latestPlayers = parsePlayersFromJSON(latestGame.players)
+      const playerIndex = latestPlayers.findIndex(p => p.userId === session.user.id)
+      
+      if (playerIndex !== -1) {
+        latestPlayers[playerIndex].loadingProgress = 100
+        latestPlayers[playerIndex].songsLoaded = true
+      }
+      
+      const updatedGame = await tx.game.update({
+        where: { id: game.id },
+        data: {
+          players: playersToJSON(latestPlayers)
+        }
+      })
+      
+      // 2. Store songs separately for this player
+      const gameSongs = await tx.gameSongs.upsert({
+        where: {
+          gameId_playerId: {
+            gameId: game.id,
+            playerId: session.user.id
+          }
+        },
+        update: {
+          songs: songs, // Prisma will handle JSON conversion
+          updatedAt: new Date()
+        },
+        create: {
+          gameId: game.id,
+          playerId: session.user.id,
+          songs: songs // Prisma will handle JSON conversion
+        }
+      })
+      
+      // 3. Get total song count from all players
+      const allPlayerSongs = await tx.gameSongs.findMany({
+        where: { gameId: game.id },
+        select: { songs: true }
+      })
+
+      let totalSongCount = 0
+      allPlayerSongs.forEach(playerSongs => {
+        // Cast the JsonValue to the expected array type
+        const songsArray = playerSongs.songs as any[]
+        if (Array.isArray(songsArray)) {
+          totalSongCount += songsArray.length
+        }
+      })
+      
+      return { updatedGame, gameSongs, totalSongCount }
     })
 
+    // Emit socket update
     if (io) {
       io.to(gameCode).emit('game-updated', {
         action: 'player-songs-ready',
         userId: session.user.id,
         songCount: songs.length,
-        totalCachedSongs: updatedSongCache.length,
+        totalCachedSongs: result.totalSongCount,
         timestamp: new Date().toISOString()
       })
     }
@@ -287,7 +335,7 @@ export async function POST(
     return NextResponse.json({ 
       success: true, 
       songCount: songs.length,
-      totalCachedSongs: updatedSongCache.length,
+      totalCachedSongs: result.totalSongCount,
       breakdown: {
         likedSongs: songs.filter(s => s.owners[0].source.type === 'liked').length,
         savedAlbums: songs.filter(s => s.owners[0].source.type === 'album').length,

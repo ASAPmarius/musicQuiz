@@ -95,20 +95,6 @@ export default function SongLoading({ params }: SongLoadingProps) {
           return { ...prevGame, players: updatedPlayers }
         })
       }
-      else if (data.action === 'player-playlists-selected') {
-        // Update playlist selection in local state
-        setGame(prevGame => {
-          if (!prevGame) return prevGame
-          
-          const updatedPlayers = prevGame.players?.map(player => 
-            player.userId === data.userId 
-              ? { ...player, playlistsSelected: data.playlistIds || player.playlistsSelected }
-              : player
-          ) || []
-          
-          return { ...prevGame, players: updatedPlayers }
-        })
-      }
       else if (data.action === 'player-songs-ready') {
         // Handle song completion - only refresh for major changes
         console.log('🔄 Player finished loading songs, refreshing game data...')
@@ -119,9 +105,30 @@ export default function SongLoading({ params }: SongLoadingProps) {
         }
         
         // Debounced fetch - wait 1 second in case multiple events come in
-        fetchTimeout.current = setTimeout(() => {
+        fetchTimeout.current = setTimeout(async () => {
           if (gameCode) {
-            fetchGameDetails(true) // Force refresh for major changes
+            // Fetch the latest game state
+            const updatedGame = await fetchGameDetails(true)
+            
+            // 🆕 SAFETY CHECK: Only redirect if MY songs are actually missing
+            if (updatedGame && currentPlayer && session?.user?.id) {
+              const myPlayerData = updatedGame.players?.find(p => p.userId === session.user.id)
+              
+              // Check if my songs were somehow reset
+              if (myPlayerData && !myPlayerData.songsLoaded && currentPlayer.songsLoaded) {
+                console.warn('⚠️ My songs were reset in the database, this shouldn\'t happen!')
+                console.log('Current player state:', currentPlayer)
+                console.log('Database player state:', myPlayerData)
+                
+                // Optional: You might want to show an error instead of redirecting
+                setError('Song loading was interrupted. Please try again.')
+                
+                // Or if you do want to redirect:
+                // router.push(`/game/${gameCode}/loading`)
+              } else {
+                console.log('✅ Songs still loaded correctly')
+              }
+            }
           }
         }, 1000)
       }
@@ -140,14 +147,14 @@ export default function SongLoading({ params }: SongLoadingProps) {
     if (!gameCode) {
       console.error('❌ No gameCode available for API call')
       setLoading(false)
-      return
+      return null // 🆕 Return null when no gameCode
     }
 
     // Debouncing: prevent too frequent API calls (unless forced)
     const now = Date.now()
     if (!force && now - lastFetchTime.current < 2000) {
       console.log('🚫 Skipping API call - too soon since last fetch')
-      return
+      return null // 🆕 Return null when skipping
     }
     lastFetchTime.current = now
     
@@ -187,10 +194,16 @@ export default function SongLoading({ params }: SongLoadingProps) {
       } else {
         console.error('❌ Current player not found in game')
       }
+      
+      // 🆕 Return the game data
+      return gameData
+      
     } catch (err) {
       console.error('💥 Failed to load game:', err)
       setError(err instanceof Error ? err.message : 'Failed to load game')
+      return null // 🆕 Return null on error
     } finally {
+      console.log('🏁 Setting loading to false')
       setLoading(false)
     }
   }

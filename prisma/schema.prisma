@@ -101,6 +101,8 @@ model Game {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
+  gameSongs   GameSongs[]
+
   @@map("games")
 }
 
@@ -179,4 +181,19 @@ enum GameStatus {
   PLAYING    // Game in progress
   FINISHED   // Game completed
   CANCELLED  // Game was cancelled
+}
+
+// Add this after your existing Game model
+model GameSongs {
+  id        String   @id @default(cuid())
+  gameId    String
+  playerId  String
+  songs     Json     // Songs for this specific player
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  
+  @@unique([gameId, playerId])
+  @@map("game_songs")
 }
