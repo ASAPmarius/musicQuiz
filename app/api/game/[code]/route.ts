@@ -1,67 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
-import { prisma } from '@/lib/prisma'
-import { LobbyPlayer } from '@/lib/types/game'
+import { PrismaClient } from '@prisma/client'
+import { LobbyPlayer, GameData } from '@/lib/types/game'
+
+const prisma = new PrismaClient()
 
 interface RouteParams {
-  params: {
+  params: Promise<{
     code: string
-  }
+  }>
 }
 
+// GET - Fetch game details
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
-    // Check authentication
-    const session = await getServerSession(authOptions)
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-    }
-
     const resolvedParams = await params
     const gameCode = resolvedParams.code.toUpperCase()
+    
+    console.log('🔍 Fetching game details for:', gameCode)
 
-    // Find the game with players from the new GamePlayer table
+    // Find game with all players
     const game = await prisma.game.findUnique({
       where: { code: gameCode },
       include: {
-        host: {
-          select: {
-            id: true,
-            name: true,
-            image: true
-          }
-        },
-        // 🆕 Include players from the new GamePlayer table
+        host: true,
         players: {
-          include: {
-            user: {
-              select: {
-                name: true,
-                image: true
-              }
-            }
-          },
-          orderBy: {
-            joinedAt: 'asc' // Show players in join order
-          }
+          orderBy: { joinedAt: 'asc' }
         }
       }
     })
 
     if (!game) {
+      console.log('❌ Game not found:', gameCode)
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Check if user is in the game
-    const userInGame = game.players.some((p) => p.userId === session.user.id)
-    if (!userInGame) {
-      return NextResponse.json({ 
-        error: 'You are not a member of this game' 
-      }, { status: 403 })
-    }
-
-    // 🆕 Convert GamePlayer database records to LobbyPlayer interface
+    // Format players as LobbyPlayer objects
     const currentPlayers: LobbyPlayer[] = game.players.map(player => ({
       id: player.id,
       userId: player.userId,
@@ -76,8 +51,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       isHost: player.isHost
     }))
 
+    console.log(`✅ Found game ${gameCode} with ${currentPlayers.length} players`)
+
     return NextResponse.json({
-      success: true,
       game: {
         id: game.id,
         code: game.code,
@@ -104,7 +80,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-// 🆕 Updated PUT method for atomic player updates
+// PUT - Update player status (atomic updates with socket events)
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     // Check authentication
@@ -117,6 +93,8 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const gameCode = resolvedParams.code.toUpperCase()
     const body = await request.json()
     const { playerUpdate } = body
+
+    console.log(`🔄 Player update request for ${gameCode}:`, playerUpdate)
 
     // Find the game first to get the gameId
     const game = await prisma.game.findUnique({
@@ -149,7 +127,84 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     })
 
-    // Fetch updated players list for socket broadcast (optional)
+    console.log(`✅ Updated player ${updatedPlayer.displayName}:`, {
+      songsLoaded: updatedPlayer.songsLoaded,
+      loadingProgress: updatedPlayer.loadingProgress,
+      isReady: updatedPlayer.isReady
+    })
+
+    // 🆕 EMIT SOCKET EVENTS for different types of updates
+    try {
+      const io = (global as any).io
+      if (io) {
+        // 🔄 Progress update event
+        if (playerUpdate.loadingProgress !== undefined) {
+          io.to(gameCode).emit('game-updated', {
+            action: 'player-loading-progress',
+            userId: session.user.id,
+            progress: playerUpdate.loadingProgress,
+            message: `Loading ${playerUpdate.loadingProgress}%`,
+            timestamp: new Date().toISOString()
+          })
+          console.log(`📊 Emitted progress update: ${playerUpdate.loadingProgress}%`)
+        }
+
+        // 🎵 Songs loaded event
+        if (playerUpdate.songsLoaded !== undefined) {
+          io.to(gameCode).emit('game-updated', {
+            action: playerUpdate.songsLoaded ? 'player-songs-ready' : 'player-songs-reset',
+            userId: session.user.id,
+            songsLoaded: playerUpdate.songsLoaded,
+            playerName: updatedPlayer.displayName,
+            timestamp: new Date().toISOString()
+          })
+          console.log(`🎵 Emitted songs loaded event: ${playerUpdate.songsLoaded}`)
+        }
+
+        // ✅ Ready status event
+        if (playerUpdate.isReady !== undefined) {
+          io.to(gameCode).emit('game-updated', {
+            action: 'player-ready-changed',
+            userId: session.user.id,
+            isReady: playerUpdate.isReady,
+            playerName: updatedPlayer.displayName,
+            timestamp: new Date().toISOString()
+          })
+          console.log(`✅ Emitted ready status: ${playerUpdate.isReady}`)
+        }
+
+        // 🔧 Device selection event
+        if (playerUpdate.spotifyDeviceId !== undefined || playerUpdate.deviceName !== undefined) {
+          io.to(gameCode).emit('game-updated', {
+            action: 'player-device-changed',
+            userId: session.user.id,
+            deviceName: updatedPlayer.deviceName,
+            playerName: updatedPlayer.displayName,
+            timestamp: new Date().toISOString()
+          })
+          console.log(`🔧 Emitted device change: ${updatedPlayer.deviceName}`)
+        }
+
+        // 📋 Playlist selection event
+        if (playerUpdate.playlistsSelected !== undefined) {
+          io.to(gameCode).emit('game-updated', {
+            action: 'player-playlists-selected',
+            userId: session.user.id,
+            playlistCount: updatedPlayer.playlistsSelected.length,
+            playerName: updatedPlayer.displayName,
+            timestamp: new Date().toISOString()
+          })
+          console.log(`📋 Emitted playlist selection: ${updatedPlayer.playlistsSelected.length} playlists`)
+        }
+      } else {
+        console.warn('⚠️ Socket.io not available for real-time updates')
+      }
+    } catch (socketError) {
+      console.error('❌ Error emitting socket events:', socketError)
+      // Don't fail the request just because socket failed
+    }
+
+    // Fetch updated players list for response
     const allPlayers = await prisma.gamePlayer.findMany({
       where: { gameId: game.id },
       orderBy: { joinedAt: 'asc' }
@@ -169,30 +224,113 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       isHost: player.isHost
     }))
 
+    const updatedPlayerFormatted: LobbyPlayer = {
+      id: updatedPlayer.id,
+      userId: updatedPlayer.userId,
+      displayName: updatedPlayer.displayName,
+      spotifyDeviceId: updatedPlayer.spotifyDeviceId,
+      deviceName: updatedPlayer.deviceName,
+      playlistsSelected: updatedPlayer.playlistsSelected,
+      songsLoaded: updatedPlayer.songsLoaded,
+      loadingProgress: updatedPlayer.loadingProgress,
+      joinedAt: updatedPlayer.joinedAt.toISOString(),
+      isReady: updatedPlayer.isReady,
+      isHost: updatedPlayer.isHost
+    }
+
     return NextResponse.json({
       success: true,
       message: 'Player status updated atomically!',
-      player: {
-        id: updatedPlayer.id,
-        userId: updatedPlayer.userId,
-        displayName: updatedPlayer.displayName,
-        spotifyDeviceId: updatedPlayer.spotifyDeviceId,
-        deviceName: updatedPlayer.deviceName,
-        playlistsSelected: updatedPlayer.playlistsSelected,
-        songsLoaded: updatedPlayer.songsLoaded,
-        loadingProgress: updatedPlayer.loadingProgress,
-        joinedAt: updatedPlayer.joinedAt.toISOString(),
-        isReady: updatedPlayer.isReady,
-        isHost: updatedPlayer.isHost
-      },
+      player: updatedPlayerFormatted,
       players: formattedPlayers
     })
 
   } catch (error) {
-    console.error('Error updating player:', error)
+    console.error('❌ Error updating player:', error)
+    
+    // More specific error handling
+    if (error instanceof Error) {
+      if (error.message.includes('Record to update not found')) {
+        return NextResponse.json(
+          { error: 'Player not found in this game' }, 
+          { status: 404 }
+        )
+      }
+      if (error.message.includes('Unique constraint')) {
+        return NextResponse.json(
+          { error: 'Duplicate player entry' }, 
+          { status: 409 }
+        )
+      }
+    }
+    
     return NextResponse.json(
-      { error: 'Failed to update player status' }, 
+      { error: 'Failed to update player status', details: error instanceof Error ? error.message : 'Unknown error' }, 
       { status: 500 }
     )
+  } finally {
+    await prisma.$disconnect()
+  }
+}
+
+// DELETE - Leave game (optional, for cleanup)
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    const resolvedParams = await params
+    const gameCode = resolvedParams.code.toUpperCase()
+
+    // Find the game
+    const game = await prisma.game.findUnique({
+      where: { code: gameCode },
+      select: { id: true }
+    })
+
+    if (!game) {
+      return NextResponse.json({ error: 'Game not found' }, { status: 404 })
+    }
+
+    // Remove player from game
+    const deletedPlayer = await prisma.gamePlayer.delete({
+      where: {
+        gameId_userId: {
+          gameId: game.id,
+          userId: session.user.id
+        }
+      }
+    })
+
+    // Emit socket event
+    try {
+      const io = (global as any).io
+      if (io) {
+        io.to(gameCode).emit('game-updated', {
+          action: 'player-left',
+          userId: session.user.id,
+          playerName: deletedPlayer.displayName,
+          timestamp: new Date().toISOString()
+        })
+      }
+    } catch (socketError) {
+      console.error('Error emitting player left event:', socketError)
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Left game successfully'
+    })
+
+  } catch (error) {
+    console.error('Error leaving game:', error)
+    return NextResponse.json(
+      { error: 'Failed to leave game' }, 
+      { status: 500 }
+    )
+  } finally {
+    await prisma.$disconnect()
   }
 }

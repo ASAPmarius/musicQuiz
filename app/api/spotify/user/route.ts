@@ -1,43 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { getServerSession } from 'next-auth/next'
-import { authOptions } from '@/pages/api/auth/[...nextauth]'
+import { NextRequest } from 'next/server'
+import { withSpotifyAuth, makeSpotifyRequest } from '@/lib/spotify-api-wrapper'
 
 export async function GET(request: NextRequest) {
-  try {
-    // ✅ NextAuth v4 way to get session
-    const session = await getServerSession(authOptions)
-    
-    if (!session?.accessToken) {
-      return NextResponse.json(
-        { error: 'Not authenticated' }, 
-        { status: 401 }
-      )
-    }
-
+  console.log('🎵 User profile API called')
+  
+  return withSpotifyAuth(request, async (accessToken) => {
     // Get user's profile information from Spotify
-    const response = await fetch('https://api.spotify.com/v1/me', {
-      headers: {
-        'Authorization': `Bearer ${session.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    })
-
-    if (!response.ok) {
-      console.error('Spotify API error:', response.status, response.statusText)
-      return NextResponse.json(
-        { error: 'Failed to fetch user data from Spotify' }, 
-        { status: response.status }
-      )
-    }
-
-    const user = await response.json()
-    return NextResponse.json(user)
+    const user = await makeSpotifyRequest('https://api.spotify.com/v1/me', accessToken)
     
-  } catch (error) {
-    console.error('Error in /api/spotify/user:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch user data' }, 
-      { status: 500 }
-    )
-  }
+    console.log('✅ User profile fetched successfully')
+    return user
+  })
 }

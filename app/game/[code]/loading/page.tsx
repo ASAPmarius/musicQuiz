@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { useSocket } from '@/lib/useSocket'
+import { useTokenRefresh } from '@/lib/hooks/useTokenRefresh'
 import { LobbyPlayer, GameData } from '@/lib/types/game'
 
 interface SongLoadingProps {
@@ -22,6 +23,9 @@ interface Playlist {
 export default function SongLoading({ params }: SongLoadingProps) {
   const { data: session } = useSession()
   const router = useRouter()
+  
+  // 🆕 ADD TOKEN REFRESH HOOK
+  const { isAuthenticated, needsReauth } = useTokenRefresh()
   
   const [gameCode, setGameCode] = useState<string>('')
   const [game, setGame] = useState<GameData | null>(null)
@@ -43,6 +47,40 @@ export default function SongLoading({ params }: SongLoadingProps) {
 
   const { isConnected, updatePlayerStatus, socket } = useSocket(gameCode)
 
+  // 🆕 EARLY RETURN FOR AUTH ISSUES
+  if (needsReauth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center bg-yellow-50 border border-yellow-200 rounded-lg p-8 max-w-md">
+          <h2 className="text-xl font-semibold mb-4 text-yellow-800">🔄 Refreshing Authentication</h2>
+          <p className="text-yellow-700 mb-4">
+            Your Spotify session has expired. We're refreshing your connection...
+          </p>
+          <div className="animate-spin w-8 h-8 border-4 border-yellow-500 border-t-transparent rounded-full mx-auto"></div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center bg-red-50 border border-red-200 rounded-lg p-8 max-w-md">
+          <h2 className="text-xl font-semibold mb-4 text-red-800">❌ Authentication Required</h2>
+          <p className="text-red-700 mb-4">
+            Please sign in to continue loading songs.
+          </p>
+          <button 
+            onClick={() => router.push('/')}
+            className="bg-red-600 text-white px-6 py-2 rounded-lg hover:bg-red-700"
+          >
+            Go to Login
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   // Extract game code from params
   useEffect(() => {
     async function extractGameCode() {
@@ -62,12 +100,12 @@ export default function SongLoading({ params }: SongLoadingProps) {
 
   // Fetch game details when we have session and game code
   useEffect(() => {
-    if (session && gameCode) {
+    if (isAuthenticated && gameCode) {
       console.log('🚀 Starting to fetch game details...')
       setError('') // Clear any previous errors
       fetchGameDetails(true) // Force initial fetch
     }
-  }, [session, gameCode])
+  }, [isAuthenticated, gameCode])
 
   // Socket event listeners
   useEffect(() => {
@@ -77,9 +115,19 @@ export default function SongLoading({ params }: SongLoadingProps) {
       console.log('🔔 Received game update:', data)
       
       if (data.action === 'player-loading-progress') {
-        // Handle progress updates locally without refetching
-        if (data.userId === session?.user?.id && data.message) {
-          setLoadingMessage(data.message)
+        console.log(`📊 Progress update: Player ${data.userId} at ${data.progress}%`)
+        
+        // 🔧 FIX: Update current player's local state for their own progress
+        if (data.userId === session?.user?.id) {
+          console.log('📊 Updating MY progress locally:', data.progress)
+          setCurrentPlayer(prev => prev ? { 
+            ...prev, 
+            loadingProgress: Math.round(data.progress) // Round to integer
+          } : null)
+          
+          if (data.message) {
+            setLoadingMessage(data.message)
+          }
         }
         
         // Update other players' progress in local state
@@ -88,7 +136,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
           
           const updatedPlayers = prevGame.players?.map(player => 
             player.userId === data.userId 
-              ? { ...player, loadingProgress: data.progress }
+              ? { ...player, loadingProgress: Math.round(data.progress) } // Round to integer
               : player
           ) || []
           
@@ -96,10 +144,9 @@ export default function SongLoading({ params }: SongLoadingProps) {
         })
       }
       else if (data.action === 'player-songs-ready') {
-        // Handle song completion - only refresh for major changes
         console.log('🔄 Player finished loading songs, refreshing game data...')
         
-        // Clear the timeout if it exists
+        // Clear any existing timeout
         if (fetchTimeout.current) {
           clearTimeout(fetchTimeout.current)
         }
@@ -107,101 +154,64 @@ export default function SongLoading({ params }: SongLoadingProps) {
         // Debounced fetch - wait 1 second in case multiple events come in
         fetchTimeout.current = setTimeout(async () => {
           if (gameCode) {
-            // Fetch the latest game state
-            const updatedGame = await fetchGameDetails(true)
-            
-            // 🆕 SAFETY CHECK: Only redirect if MY songs are actually missing
-            if (updatedGame && currentPlayer && session?.user?.id) {
-              const myPlayerData = updatedGame.players?.find(p => p.userId === session.user.id)
-              
-              // Check if my songs were somehow reset
-              if (myPlayerData && !myPlayerData.songsLoaded && currentPlayer.songsLoaded) {
-                console.warn('⚠️ My songs were reset in the database, this shouldn\'t happen!')
-                console.log('Current player state:', currentPlayer)
-                console.log('Database player state:', myPlayerData)
-                
-                // Optional: You might want to show an error instead of redirecting
-                setError('Song loading was interrupted. Please try again.')
-                
-                // Or if you do want to redirect:
-                // router.push(`/game/${gameCode}/loading`)
-              } else {
-                console.log('✅ Songs still loaded correctly')
-              }
-            }
+            await fetchGameDetails(true)
           }
         }, 1000)
       }
     }
     
     socket.on('game-updated', handleGameUpdate)
+    
     return () => {
       socket.off('game-updated', handleGameUpdate)
       if (fetchTimeout.current) {
         clearTimeout(fetchTimeout.current)
       }
     }
-  }, [socket, gameCode, session?.user?.id]) // Add gameCode as dependency
+  }, [socket, gameCode, session?.user?.id])
 
   const fetchGameDetails = async (force = false) => {
-    if (!gameCode) {
-      console.error('❌ No gameCode available for API call')
-      setLoading(false)
-      return null // 🆕 Return null when no gameCode
-    }
-
-    // Debouncing: prevent too frequent API calls (unless forced)
     const now = Date.now()
-    if (!force && now - lastFetchTime.current < 2000) {
-      console.log('🚫 Skipping API call - too soon since last fetch')
-      return null // 🆕 Return null when skipping
+    
+    // Prevent spam requests (max once per second)
+    if (!force && (now - lastFetchTime.current) < 1000) {
+      console.log('🛑 Skipping fetch - too frequent')
+      return null
     }
+    
     lastFetchTime.current = now
     
-    setLoading(true)
-    
+    if (!gameCode || gameCode.length !== 6) {
+      console.log('⚠️ Invalid gameCode, stopping fetch')
+      setLoading(false)
+      return null
+    }
+
     try {
-      console.log('🔄 Fetching game details for code:', gameCode)
+      console.log('📡 Fetching game details for:', gameCode)
       const response = await fetch(`/api/game/${gameCode}`)
-      
-      console.log('📡 API Response status:', response.status)
       
       if (!response.ok) {
         const errorText = await response.text()
         console.error('❌ API Error:', response.status, errorText)
-        throw new Error(`Game not found (${response.status})`)
+        throw new Error(`Server error: ${response.status}`)
       }
       
-      const apiResponse = await response.json()
-      console.log('✅ API Response received')
+      const data = await response.json()
+      console.log('✅ Received game data')
       
-      // Handle the actual API response structure: { success: true, game: {...} }
-      if (!apiResponse.success || !apiResponse.game) {
-        console.error('❌ Invalid API response structure:', apiResponse)
-        throw new Error('Invalid API response')
-      }
+      setGame(data.game)
       
-      const gameData: GameData = apiResponse.game
-      console.log('🎮 Game data loaded')
-      setGame(gameData)
+      // Find current player
+      const player = data.game.players?.find((p: LobbyPlayer) => p.userId === session?.user?.id)
+      setCurrentPlayer(player || null)
       
-      const player = gameData.players?.find(p => p.userId === session?.user?.id)
-      if (player) {
-        console.log('👤 Current player found')
-        setCurrentPlayer(player)
-        // Restore selected playlists from database
-        setSelectedPlaylistIds(new Set(player.playlistsSelected || []))
-      } else {
-        console.error('❌ Current player not found in game')
-      }
-      
-      // 🆕 Return the game data
-      return gameData
-      
+      return data.game
+
     } catch (err) {
-      console.error('💥 Failed to load game:', err)
+      console.error('❌ Fetch error:', err)
       setError(err instanceof Error ? err.message : 'Failed to load game')
-      return null // 🆕 Return null on error
+      return null
     } finally {
       console.log('🏁 Setting loading to false')
       setLoading(false)
@@ -229,11 +239,25 @@ export default function SongLoading({ params }: SongLoadingProps) {
     return playlistSongs + 200 + 300 // + estimated liked songs + estimated albums
   }
 
-  // Load user's playlists
+  // 🆕 ENHANCED PLAYLIST LOADING WITH TOKEN REFRESH HANDLING
   const fetchPlaylists = async () => {
     setLoadingPlaylists(true)
     try {
       const response = await fetch('/api/spotify/playlists')
+      
+      // 🆕 HANDLE TOKEN REFRESH ERRORS
+      if (response.status === 401) {
+        const errorData = await response.json()
+        if (errorData.needsReauth) {
+          setError('Your Spotify session has expired. Please refresh the page.')
+          return
+        }
+      }
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch playlists: ${response.status}`)
+      }
+      
       const data: Playlist[] = await response.json()
       setPlaylists(data)
       
@@ -255,6 +279,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
       
     } catch (error) {
       console.error('Failed to fetch playlists:', error)
+      setError(error instanceof Error ? error.message : 'Failed to fetch playlists')
     } finally {
       setLoadingPlaylists(false)
     }
@@ -298,50 +323,82 @@ export default function SongLoading({ params }: SongLoadingProps) {
     }
 
     setLoadingSongs(true)
-    setLoadingMessage('Starting to load your music...')
-    
+    setLoadingMessage('Starting song collection...')
+    setSongBreakdown(null)
+
     try {
-      // Call your existing API endpoint for loading songs
+      // 🔧 FIX: Use the existing load-songs route with proper progress tracking
       const response = await fetch(`/api/game/${gameCode}/load-songs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           selectedPlaylistIds: Array.from(selectedPlaylistIds)
         })
       })
-      
-      if (!response.ok) throw new Error('Failed to load songs')
-      
+
+      // Handle token refresh errors
+      if (response.status === 401) {
+        const errorData = await response.json()
+        if (errorData.needsReauth) {
+          setError('Your Spotify session has expired. Please refresh the page.')
+          return
+        }
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`Failed to load songs: ${response.status} - ${errorText}`)
+      }
+
       const result = await response.json()
+      console.log('✅ Songs loaded successfully:', result)
       
-      // Store breakdown info
-      if (result.breakdown) {
-        setSongBreakdown(result.breakdown)
+      // Map the response to match what your UI expects
+      const breakdown = {
+        totalSongs: result.songCount || 0,
+        sources: [] as string[]
       }
       
-      // Mark player as having songs loaded
-      const updates = { 
+      // Add breakdown details if available
+      if (result.breakdown) {
+        if (result.breakdown.playlists > 0) {
+          breakdown.sources.push(`Playlists (${result.breakdown.playlists} songs)`)
+        }
+        if (result.breakdown.likedSongs > 0) {
+          breakdown.sources.push(`Liked Songs (${result.breakdown.likedSongs} songs)`)
+        }
+        if (result.breakdown.savedAlbums > 0) {
+          breakdown.sources.push(`Albums (${result.breakdown.savedAlbums} songs)`)
+        }
+      } else {
+        breakdown.sources = [`Selected Playlists (${selectedPlaylistIds.size} playlists)`]
+      }
+      
+      setSongBreakdown(breakdown)
+      setLoadingMessage(`Songs loaded successfully! Found ${breakdown.totalSongs} songs.`)
+
+      // The load-songs route already handles:
+      // - Database updates (songsLoaded: true, loadingProgress: 100)
+      // - Socket events (player-songs-ready)
+      // - Progress tracking
+      // So we just need to update local state
+
+      setCurrentPlayer(prev => prev ? { 
+        ...prev, 
         songsLoaded: true, 
         loadingProgress: 100 
-      }
-      await updatePlayerInDB(updates)
-      updatePlayerStatus(updates)
-      
-      // Notify via socket
-      if (socket) {
-        socket.emit('game-action', {
-          gameCode,
-          action: 'player-songs-ready',
-          payload: { songCount: result.songCount }
-        })
-      }
-      
-      setLoadingMessage(`✅ Loaded ${result.songCount} songs successfully!`)
-      
+      } : null)
+
+      console.log('🎉 Song loading process completed successfully!')
+
     } catch (error) {
       console.error('Failed to load songs:', error)
-      alert('Failed to load songs. Please try again.')
+      setError(error instanceof Error ? error.message : 'Failed to load songs')
       setLoadingMessage('')
+      
+      // Reset progress on error
+      setCurrentPlayer(prev => prev ? { ...prev, loadingProgress: 0 } : null)
+      
     } finally {
       setLoadingSongs(false)
     }
@@ -379,9 +436,15 @@ export default function SongLoading({ params }: SongLoadingProps) {
             setLoading(true)
             if (gameCode) fetchGameDetails(true)
           }}
-          className="bg-blue-500 text-white px-4 py-2 rounded"
+          className="bg-blue-500 text-white px-4 py-2 rounded mr-2"
         >
           Try Again
+        </button>
+        <button 
+          onClick={() => router.push('/')}
+          className="bg-gray-500 text-white px-4 py-2 rounded"
+        >
+          Go Home
         </button>
       </div>
     )
@@ -412,143 +475,117 @@ export default function SongLoading({ params }: SongLoadingProps) {
               disabled={loadingPlaylists}
               className="bg-green-500 text-white px-4 py-2 rounded mr-4 disabled:opacity-50"
             >
-              {loadingPlaylists ? 'Loading...' : 'Load My Playlists'}
+              {loadingPlaylists ? 'Loading Playlists...' : 'Load My Playlists'}
             </button>
           )}
 
-          {/* Explanation of what gets loaded */}
-          {playlists.length > 0 && !currentPlayer.songsLoaded && (
-            <div className="mb-6 p-4 bg-blue-100 rounded-lg">
-              <h3 className="font-semibold text-blue-800 mb-2">🎵 What will be loaded for the quiz:</h3>
-              <ul className="text-sm text-blue-700 space-y-1">
-                <li>• <strong>All your Liked Songs</strong> (automatically included)</li>
-                <li>• <strong>All your Saved Albums</strong> (automatically included)</li>
-                <li>• <strong>Selected Playlists below</strong> ({selectedPlaylistIds.size} selected)</li>
-              </ul>
-              <div className="mt-2 text-xs text-blue-600">
-                Estimated total: ~{getEstimatedSongCount()} songs from your library
-              </div>
-            </div>
-          )}
-
-          {/* Step 2: Select Playlists */}
+          {/* Step 2: Playlist Selection */}
           {playlists.length > 0 && !currentPlayer.songsLoaded && (
             <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <h3 className="text-lg font-medium">
-                  Choose Playlists ({selectedPlaylistIds.size} selected)
+              <div>
+                <h3 className="font-semibold mb-2">
+                  Select Playlists ({selectedPlaylistIds.size} selected):
                 </h3>
-                <button
-                  onClick={loadSelectedSongs}
-                  disabled={loadingSongs || selectedPlaylistIds.size === 0}
-                  className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
-                >
-                  {loadingSongs ? 'Loading Songs...' : `Load Songs from Library`}
-                </button>
+                <div className="max-h-60 overflow-y-auto border rounded p-2">
+                  {playlists.map(playlist => (
+                    <label key={playlist.id} className="flex items-center space-x-2 p-2 hover:bg-gray-100 rounded">
+                      <input
+                        type="checkbox"
+                        checked={selectedPlaylistIds.has(playlist.id)}
+                        onChange={() => togglePlaylistSelection(playlist.id)}
+                        className="rounded"
+                      />
+                      <div className="flex-1">
+                        <div className="font-medium">{playlist.name}</div>
+                        <div className="text-sm text-gray-600">{playlist.tracks.total} songs</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
-              
-              <div className="max-h-60 overflow-y-auto space-y-2">
-                {playlists.map(playlist => (
-                  <div key={playlist.id} className="flex items-center space-x-3 p-2 border rounded bg-white">
-                    <input
-                      type="checkbox"
-                      checked={selectedPlaylistIds.has(playlist.id)}
-                      onChange={() => togglePlaylistSelection(playlist.id)}
-                      className="w-4 h-4"
-                    />
-                    <div className="flex-1">
-                      <div className="font-medium">{playlist.name}</div>
-                      <div className="text-sm text-gray-600">{playlist.tracks.total} tracks</div>
+
+              {playlists.length > 0 && !currentPlayer.songsLoaded && !loadingSongs && (
+                <div className="flex items-center space-x-4">
+                  <button
+                    onClick={loadSelectedSongs}
+                    disabled={selectedPlaylistIds.size === 0}
+                    className="bg-blue-500 text-white px-6 py-2 rounded disabled:opacity-50"
+                  >
+                    Load Selected Songs
+                  </button>
+                  
+                  {selectedPlaylistIds.size > 0 && (
+                    <div className="text-sm text-gray-600">
+                      Estimated {getEstimatedSongCount()} songs total
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Step 3: Loading Progress */}
-          {loadingSongs && (
-            <div className="space-y-3">
-              <div className="bg-gray-200 rounded-full h-3">
-                <div 
-                  className="bg-blue-500 h-3 rounded-full transition-all duration-500 ease-out"
-                  style={{ width: `${currentPlayer.loadingProgress || 0}%` }}
-                />
-              </div>
-              <div className="text-sm text-gray-700">
-                {loadingMessage || `Loading your music library... ${currentPlayer.loadingProgress || 0}%`}
-              </div>
-              <div className="text-xs text-gray-500">
-                This includes your liked songs, saved albums, and selected playlists
-              </div>
-            </div>
-          )}
-
-          {/* Step 4: Songs Loaded */}
-          {currentPlayer.songsLoaded && (
-            <div className="space-y-2">
-              <div className="text-green-600 font-medium">
-                ✅ Songs loaded successfully!
-              </div>
-              {songBreakdown && (
-                <div className="text-sm text-gray-600 space-y-1">
-                  <div>📚 {songBreakdown.likedSongs} songs from Liked Songs</div>
-                  <div>💿 {songBreakdown.savedAlbums} songs from Saved Albums</div>
-                  <div>📋 {songBreakdown.playlists} songs from {selectedPlaylistIds.size} playlists</div>
-                  <div className="font-medium pt-1">
-                    🎵 Total: {songBreakdown.likedSongs + songBreakdown.savedAlbums + songBreakdown.playlists} songs ready for quiz!
-                  </div>
+                  )}
                 </div>
               )}
             </div>
           )}
+
+          {/* Step 3: Loading Progress */}
+          {(loadingSongs || (currentPlayer.loadingProgress > 0 && currentPlayer.loadingProgress < 100)) && !currentPlayer.songsLoaded && (
+            <div className="mt-4 p-4 bg-yellow-50 rounded">
+              <div className="font-medium">Loading songs...</div>
+              <div className="text-sm text-gray-600 mt-1">{loadingMessage}</div>
+              <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
+                <div 
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${Math.round(currentPlayer.loadingProgress || 0)}%` }}
+                />
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                {Math.round(currentPlayer.loadingProgress || 0)}% complete
+              </div>
+            </div>
+          )}
+
+          {/* Step 4: Completion - UPDATED VERSION */}
+          {currentPlayer.songsLoaded && songBreakdown && (
+            <div className="mt-4 p-4 bg-green-50 rounded">
+              <div className="font-medium text-green-800">✅ Songs loaded successfully!</div>
+              <div className="text-sm text-green-600 mt-1">
+                Total: {songBreakdown.totalSongs} songs from {songBreakdown.sources?.join(', ')}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Other Players' Status */}
-        <div className="space-y-4">
-          <h2 className="text-xl font-semibold">Other Players</h2>
-          {game.players
-            ?.filter(p => p.userId !== currentPlayer.userId)
-            .map(player => (
-              <div key={player.userId} className="border rounded-lg p-4">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-medium">{player.displayName}</h3>
-                  <div className="text-sm">
-                    {player.songsLoaded ? (
-                      <span className="text-green-600">✅ Ready</span>
-                    ) : (player.playlistsSelected?.length || 0) > 0 ? (
-                      <span className="text-blue-600">🎵 Loading music library...</span>
-                    ) : (
-                      <span className="text-gray-500">⏳ Selecting playlists...</span>
-                    )}
+        {/* Other Players Section */}
+        <div className="border rounded-lg p-4">
+          <h2 className="text-xl font-semibold mb-4">Other Players</h2>
+          <div className="space-y-3">
+            {game.players?.filter(p => p.userId !== currentPlayer.userId).map(player => (
+              <div key={player.userId} className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                <div>
+                  <div className="font-medium">{player.displayName}</div>
+                  <div className="text-sm text-gray-600">
+                    {player.playlistsSelected?.length || 0} playlists selected
                   </div>
                 </div>
-                
-                {/* Progress bar */}
-                <div className="mt-3">
-                  <div className="bg-gray-200 rounded-full h-2">
-                    <div 
-                      className="bg-blue-500 h-2 rounded-full transition-all duration-500 ease-out"
-                      style={{ width: `${player.loadingProgress || 0}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-600 mt-1">
-                    <span>{player.playlistsSelected?.length || 0} playlists + albums + liked songs</span>
-                    <span>{player.loadingProgress || 0}%</span>
-                  </div>
-                  {/* Show loading message if they're actively loading */}
-                  {(player.loadingProgress || 0) > 0 && (player.loadingProgress || 0) < 100 && (
-                    <div className="text-xs text-blue-600 mt-1">
-                      Loading their music collection...
+                <div className="text-right">
+                  {player.songsLoaded ? (
+                    <span className="text-green-600 font-medium">✅ Ready</span>
+                  ) : (
+                    <div>
+                      <div className="text-sm text-gray-600">{Math.round(player.loadingProgress || 0)}%</div>
+                      <div className="w-20 bg-gray-200 rounded-full h-2">
+                        <div 
+                          className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.round(player.loadingProgress || 0)}%` }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
-            )) || []}
+            ))}
+          </div>
         </div>
 
         {/* Start Game Button (Host Only) */}
-        {currentPlayer?.isHost && (
+        {currentPlayer.isHost && (
           <div className="text-center">
             <button
               onClick={handleStartGame}

@@ -195,17 +195,40 @@ export async function fetchPlayerSongsFromSelection(
   const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000'
   
   try {
-    console.log(`Fetching songs from ${selectedPlaylistIds.length} selected playlists + all albums + liked songs for ${playerName}`)
+  console.log(`Fetching songs from ${selectedPlaylistIds.length} selected playlists + all albums + liked songs for ${playerName}`)
+  
+  // 1. Get all playlists to look up names
+  const playlistsResponse = await fetch(`${baseUrl}/api/spotify/playlists`, {
+    headers: { 'Authorization': `Bearer ${accessToken}` }
+  })
+  
+  if (playlistsResponse.ok) {
+    const allPlaylists = await playlistsResponse.json()
     
-    // 1. Fetch liked songs (ALL of them, same as before)
-    const likedResponse = await fetch(`${baseUrl}/api/spotify/liked-songs`, {
-      headers: { 'Authorization': `Bearer ${accessToken}` }
-    })
-    if (likedResponse.ok) {
-      const likedSongs = await likedResponse.json()
+    // Process each selected playlist
+    for (const playlistId of selectedPlaylistIds) {
+      const playlist = allPlaylists.find((p: any) => p.id === playlistId)
+      if (!playlist) {
+        console.warn(`Playlist ${playlistId} not found in user's playlists`)
+        continue
+      }
       
-      if (Array.isArray(likedSongs)) {
-        likedSongs.forEach((track: any) => {
+      try {
+        console.log(`📋 Processing selected playlist: ${playlist.name}`)
+        
+        const tracksResponse = await fetch(`${baseUrl}/api/spotify/playlist/${playlistId}/tracks`, {
+          headers: { 'Authorization': `Bearer ${accessToken}` }
+        })
+        
+        if (!tracksResponse.ok) {
+          console.error(`Failed to fetch tracks for playlist ${playlist.name}:`, tracksResponse.status)
+          continue
+        }
+        
+        const tracksData = await tracksResponse.json()
+        const tracks = Array.isArray(tracksData) ? tracksData : (tracksData.items || [])
+        
+        tracks.forEach((track: any) => {
           if (track && track.id && !seenSongIds.has(track.id)) {
             seenSongIds.add(track.id)
             songs.push({
@@ -216,16 +239,26 @@ export async function fetchPlayerSongsFromSelection(
               owners: [{
                 playerId,
                 playerName,
-                source: { type: 'liked', name: 'Liked Songs' }
+                source: { 
+                  type: 'playlist', 
+                  name: playlist.name,
+                  id: playlist.id
+                }
               }]
             })
           }
         })
-        console.log(`Added ${likedSongs.length} liked songs`)
+        
+        console.log(`✅ Added ${tracks.length} songs from selected playlist "${playlist.name}"`)
+        
+      } catch (playlistError) {
+        console.error(`Error processing playlist ${playlistId}:`, playlistError)
       }
-    } else {
-      console.error('Failed to fetch liked songs:', likedResponse.status)
     }
+  } else {
+    console.error('Failed to fetch playlists for name lookup:', playlistsResponse.status)
+    throw new Error('Failed to fetch playlists')
+  }
 
     // 2. Fetch saved albums (ALL of them, same as before)
     const albumsResponse = await fetch(`${baseUrl}/api/spotify/saved-albums`, {
