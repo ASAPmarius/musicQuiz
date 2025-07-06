@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
-import { LobbyPlayer, parsePlayersFromJSON, playersToJSON } from '@/lib/types/game'
+import { LobbyPlayer } from '@/lib/types/game'
 
 interface RouteParams {
   params: {
@@ -19,9 +19,9 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     const resolvedParams = await params
-  const gameCode = resolvedParams.code.toUpperCase()
+    const gameCode = resolvedParams.code.toUpperCase()
 
-    // Find the game
+    // Find the game with players from the new GamePlayer table
     const game = await prisma.game.findUnique({
       where: { code: gameCode },
       include: {
@@ -31,6 +31,20 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
             name: true,
             image: true
           }
+        },
+        // 🆕 Include players from the new GamePlayer table
+        players: {
+          include: {
+            user: {
+              select: {
+                name: true,
+                image: true
+              }
+            }
+          },
+          orderBy: {
+            joinedAt: 'asc' // Show players in join order
+          }
         }
       }
     })
@@ -39,16 +53,28 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Parse current players with safe conversion
-    const currentPlayers = parsePlayersFromJSON(game.players)
-
     // Check if user is in the game
-    const userInGame = currentPlayers.some((p) => p.userId === session.user.id)
+    const userInGame = game.players.some((p) => p.userId === session.user.id)
     if (!userInGame) {
       return NextResponse.json({ 
         error: 'You are not a member of this game' 
       }, { status: 403 })
     }
+
+    // 🆕 Convert GamePlayer database records to LobbyPlayer interface
+    const currentPlayers: LobbyPlayer[] = game.players.map(player => ({
+      id: player.id,
+      userId: player.userId,
+      displayName: player.displayName,
+      spotifyDeviceId: player.spotifyDeviceId,
+      deviceName: player.deviceName,
+      playlistsSelected: player.playlistsSelected,
+      songsLoaded: player.songsLoaded,
+      loadingProgress: player.loadingProgress,
+      joinedAt: player.joinedAt.toISOString(),
+      isReady: player.isReady,
+      isHost: player.isHost
+    }))
 
     return NextResponse.json({
       success: true,
@@ -78,7 +104,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-// Update player status in game
+// 🆕 Updated PUT method for atomic player updates
 export async function PUT(request: NextRequest, { params }: RouteParams) {
   try {
     // Check authentication
@@ -92,54 +118,78 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const body = await request.json()
     const { playerUpdate } = body
 
-    // Find the game
+    // Find the game first to get the gameId
     const game = await prisma.game.findUnique({
-      where: { code: gameCode }
+      where: { code: gameCode },
+      select: { id: true }
     })
 
     if (!game) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Parse current players with safe conversion
-    const currentPlayers = parsePlayersFromJSON(game.players)
-
-    // Find the player to update
-    const playerIndex = currentPlayers.findIndex((p) => p.userId === session.user.id)
-    if (playerIndex === -1) {
-      return NextResponse.json({ 
-        error: 'You are not a member of this game' 
-      }, { status: 403 })
-    }
-
-    // Update the player's information
-    const updatedPlayers = [...currentPlayers]
-    updatedPlayers[playerIndex] = {
-      ...updatedPlayers[playerIndex],
-      ...playerUpdate,
-      // Prevent changing certain protected fields
-      userId: updatedPlayers[playerIndex].userId,
-      joinedAt: updatedPlayers[playerIndex].joinedAt,
-      isHost: updatedPlayers[playerIndex].isHost
-    }
-
-    // Update the game
-    const updatedGame = await prisma.game.update({
-      where: { id: game.id },
+    // 🎯 ATOMIC UPDATE - No more race conditions!
+    const updatedPlayer = await prisma.gamePlayer.update({
+      where: {
+        gameId_userId: {
+          gameId: game.id,
+          userId: session.user.id
+        }
+      },
       data: {
-        players: playersToJSON(updatedPlayers), // Convert to JSON
+        // Only update the fields that were provided
+        ...(playerUpdate.isReady !== undefined && { isReady: playerUpdate.isReady }),
+        ...(playerUpdate.songsLoaded !== undefined && { songsLoaded: playerUpdate.songsLoaded }),
+        ...(playerUpdate.loadingProgress !== undefined && { loadingProgress: playerUpdate.loadingProgress }),
+        ...(playerUpdate.spotifyDeviceId !== undefined && { spotifyDeviceId: playerUpdate.spotifyDeviceId }),
+        ...(playerUpdate.deviceName !== undefined && { deviceName: playerUpdate.deviceName }),
+        ...(playerUpdate.playlistsSelected !== undefined && { playlistsSelected: playerUpdate.playlistsSelected }),
+        // Always update the timestamp
         updatedAt: new Date()
       }
     })
 
+    // Fetch updated players list for socket broadcast (optional)
+    const allPlayers = await prisma.gamePlayer.findMany({
+      where: { gameId: game.id },
+      orderBy: { joinedAt: 'asc' }
+    })
+
+    const formattedPlayers: LobbyPlayer[] = allPlayers.map(player => ({
+      id: player.id,
+      userId: player.userId,
+      displayName: player.displayName,
+      spotifyDeviceId: player.spotifyDeviceId,
+      deviceName: player.deviceName,
+      playlistsSelected: player.playlistsSelected,
+      songsLoaded: player.songsLoaded,
+      loadingProgress: player.loadingProgress,
+      joinedAt: player.joinedAt.toISOString(),
+      isReady: player.isReady,
+      isHost: player.isHost
+    }))
+
     return NextResponse.json({
       success: true,
-      message: 'Player status updated',
-      players: updatedPlayers
+      message: 'Player status updated atomically!',
+      player: {
+        id: updatedPlayer.id,
+        userId: updatedPlayer.userId,
+        displayName: updatedPlayer.displayName,
+        spotifyDeviceId: updatedPlayer.spotifyDeviceId,
+        deviceName: updatedPlayer.deviceName,
+        playlistsSelected: updatedPlayer.playlistsSelected,
+        songsLoaded: updatedPlayer.songsLoaded,
+        loadingProgress: updatedPlayer.loadingProgress,
+        joinedAt: updatedPlayer.joinedAt.toISOString(),
+        isReady: updatedPlayer.isReady,
+        isHost: updatedPlayer.isHost
+      },
+      players: formattedPlayers
     })
 
   } catch (error) {
-    console.error('Error updating player status:', error)
+    console.error('Error updating player:', error)
     return NextResponse.json(
       { error: 'Failed to update player status' }, 
       { status: 500 }

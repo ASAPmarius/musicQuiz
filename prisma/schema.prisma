@@ -26,6 +26,8 @@ model User {
   hostedGames   Game[]    @relation("GameHost")
   gameScores    Score[]
   responses     Response[]
+
+  gamePlayer    GamePlayer[]
   
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -80,30 +82,58 @@ model VerificationToken {
 // Game model - represents a quiz session
 model Game {
   id          String     @id @default(cuid())
-  code        String     @unique // 6-digit room code like "ABC123"
+  code        String     @unique
   hostId      String
   status      GameStatus @default(WAITING)
   maxPlayers  Int        @default(8)
   targetScore  Int        @default(30)
   
-  players     Json       @default("[]") // Array of player objects
-  
-  settings    Json       @default("{}") // Store game configuration
-  
+  settings    Json       @default("{}")
   currentRound Int       @default(0)
-  songCache    Json      @default("[]") // Cache mixed songs between games
+  songCache    Json      @default("[]")
   
-  // Relationships
+  players     GamePlayer[]
+  
   host        User       @relation("GameHost", fields: [hostId], references: [id])
   rounds      Round[]
   scores      Score[]
+  gameSongs   GameSongs[]
   
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
-  gameSongs   GameSongs[]
-
   @@map("games")
+}
+
+model GamePlayer {
+  id                  String   @id @default(cuid())
+  gameId              String
+  userId              String
+  
+  // Player info
+  displayName         String
+  spotifyDeviceId     String?
+  deviceName          String   @default("No device selected")
+  
+  // Player status - these are the critical fields we're separating!
+  isReady             Boolean  @default(false)
+  isHost              Boolean  @default(false)
+  songsLoaded         Boolean  @default(false)
+  loadingProgress     Int      @default(0)
+  
+  // Player settings
+  playlistsSelected   String[] @default([])
+  
+  // Timestamps
+  joinedAt            DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  // Relationships
+  game                Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([gameId, userId]) // Each player can only be in a game once
+  @@map("game_players")
 }
 
 // Round model - represents one question in a game

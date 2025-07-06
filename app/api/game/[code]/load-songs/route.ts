@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
-import { fetchPlayerSongsFromSelection } from '@/lib/spotify-mixer'
 import { prisma } from '@/lib/prisma'
-import { parsePlayersFromJSON, playersToJSON } from '@/lib/types/game'
 
 export async function POST(
   request: NextRequest,
@@ -14,7 +12,6 @@ export async function POST(
   let game: any = null
   let gameCode: string = ''
   let currentPlayer: any = null
-  let players: any[] = []
   
   try {
     // 1. Authentication
@@ -32,25 +29,27 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid playlist IDs' }, { status: 400 })
     }
 
-    // 3. Find the game
+    // 3. Find the game and current player from GamePlayer table
     game = await prisma.game.findUnique({
       where: { code: gameCode },
-      include: { host: true }
+      include: { 
+        host: true,
+        players: {
+          where: { userId: session.user.id }
+        }
+      }
     })
 
     if (!game) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // 4. Find the requesting player
-    players = parsePlayersFromJSON(game.players)
-    const playerIndex = players.findIndex(p => p.userId === session.user.id)
-    
-    if (playerIndex === -1) {
+    // 4. Find the requesting player (now from GamePlayer table)
+    if (game.players.length === 0) {
       return NextResponse.json({ error: 'Player not in game' }, { status: 403 })
     }
 
-    currentPlayer = players[playerIndex]
+    currentPlayer = game.players[0] // We filtered by userId, so this is our player
 
     // 5. Get access token
     const accessToken = (session as any).accessToken
@@ -61,12 +60,20 @@ export async function POST(
     const io = (global as any).io
     const baseUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000'
 
-    // Helper function to update progress
+    // Helper function to update progress - 🎯 NOW ATOMIC!
     const updateProgress = async (progress: number, message?: string) => {
-      currentPlayer.loadingProgress = progress
-      await prisma.game.update({
-        where: { id: game.id },
-        data: { players: playersToJSON(players) }
+      // 🎯 ATOMIC UPDATE - No race condition possible!
+      await prisma.gamePlayer.update({
+        where: {
+          gameId_userId: {
+            gameId: game.id,
+            userId: session.user.id
+          }
+        },
+        data: { 
+          loadingProgress: progress,
+          updatedAt: new Date()
+        }
       })
 
       if (io) {
@@ -80,33 +87,16 @@ export async function POST(
       }
     }
 
-    // 6. Start loading process
-    await updateProgress(5, 'Analyzing your music library...')
-    
-    // Get playlist details for estimation
-    let allPlaylists: any[] = []
-    let totalExpectedSongs = 0
-    
-    try {
-      const playlistsResponse = await fetch(`${baseUrl}/api/spotify/playlists`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      })
-      
-      if (playlistsResponse.ok) {
-        allPlaylists = await playlistsResponse.json()
-        const selectedPlaylists = allPlaylists.filter((p: any) => selectedPlaylistIds.includes(p.id))
-        totalExpectedSongs = selectedPlaylists.reduce((sum: number, p: any) => sum + (p.tracks?.total || 0), 0)
-      }
-    } catch (playlistFetchError) {
-      console.error('Error fetching playlists:', playlistFetchError)
+    // 6. Initialize progress
+    await updateProgress(10, 'Starting to fetch your music library...')
+
+    // 7. Estimate total songs for progress calculation
+    const estimateTotalSongs = () => {
+      return 500 + (selectedPlaylistIds.length * 50) // Rough estimate
     }
+    const totalExpectedSongs = estimateTotalSongs()
 
-    // Add estimates for liked songs and albums
-    totalExpectedSongs += 500 // Conservative estimate
-
-    await updateProgress(15, `Found ~${totalExpectedSongs} songs to process`)
-
-    // 7. Load songs from different sources
+    // 8. Load songs from different sources
     const songs: any[] = []
     const seenSongIds = new Set<string>()
 
@@ -167,7 +157,8 @@ export async function POST(
               
               if (albumTracksResponse.ok) {
                 const albumTracksData = await albumTracksResponse.json()
-                const albumTracks = Array.isArray(albumTracksData) ? albumTracksData : (albumTracksData.items || [])
+                const albumTracks = Array.isArray(albumTracksData) ? 
+                  albumTracksData : (albumTracksData.items || [])
                 
                 albumTracks.forEach((track: any) => {
                   if (track && track.id && !seenSongIds.has(track.id)) {
@@ -176,7 +167,7 @@ export async function POST(
                       id: track.id,
                       name: track.name,
                       artists: track.artists,
-                      album: savedAlbum.name,
+                      album: track.album,
                       owners: [{
                         playerId: session.user.id,
                         playerName: currentPlayer.displayName,
@@ -190,9 +181,7 @@ export async function POST(
                   }
                 })
                 
-                if (i % 10 === 0) {
-                  await updateSongProgress(songs.length, `Saved Albums (${i + 1}/${savedAlbums.length})`)
-                }
+                await updateSongProgress(songs.length, `${savedAlbum.name} (${i + 1}/${savedAlbums.length})`)
               }
             } catch (albumError) {
               console.error(`Error processing album ${savedAlbum.name}:`, albumError)
@@ -208,40 +197,51 @@ export async function POST(
     if (selectedPlaylistIds.length > 0) {
       for (let i = 0; i < selectedPlaylistIds.length; i++) {
         const playlistId = selectedPlaylistIds[i]
+        
         try {
-          const playlist = allPlaylists.find((p: any) => p.id === playlistId)
-          if (!playlist) continue
-
-          const tracksResponse = await fetch(`${baseUrl}/api/spotify/playlist/${playlistId}/tracks`, {
+          console.log(`🔄 Fetching playlist ${i + 1}/${selectedPlaylistIds.length}: ${playlistId}`)
+          
+          // Get playlist info
+          const playlistResponse = await fetch(`${baseUrl}/api/spotify/playlist/${playlistId}`, {
             headers: { 'Authorization': `Bearer ${accessToken}` }
           })
           
-          if (tracksResponse.ok) {
-            const tracksData = await tracksResponse.json()
-            const tracks = Array.isArray(tracksData) ? tracksData : (tracksData.items || [])
+          if (playlistResponse.ok) {
+            const playlist = await playlistResponse.json()
             
-            tracks.forEach((track: any) => {
-              if (track && track.id && !seenSongIds.has(track.id)) {
-                seenSongIds.add(track.id)
-                songs.push({
-                  id: track.id,
-                  name: track.name,
-                  artists: track.artists,
-                  album: track.album,
-                  owners: [{
-                    playerId: session.user.id,
-                    playerName: currentPlayer.displayName,
-                    source: { 
-                      type: 'playlist', 
-                      name: playlist.name,
-                      id: playlist.id
-                    }
-                  }]
-                })
-              }
+            // Get playlist tracks
+            const tracksResponse = await fetch(`${baseUrl}/api/spotify/playlist/${playlistId}/tracks`, {
+              headers: { 'Authorization': `Bearer ${accessToken}` }
             })
             
-            await updateSongProgress(songs.length, `${playlist.name} (${i + 1}/${selectedPlaylistIds.length})`)
+            if (tracksResponse.ok) {
+              const tracksData = await tracksResponse.json()
+              const tracks = Array.isArray(tracksData) ? 
+                tracksData : (tracksData.items || [])
+              
+              tracks.forEach((track: any) => {
+                if (track && track.id && !seenSongIds.has(track.id)) {
+                  seenSongIds.add(track.id)
+                  songs.push({
+                    id: track.id,
+                    name: track.name,
+                    artists: track.artists,
+                    album: track.album,
+                    owners: [{
+                      playerId: session.user.id,
+                      playerName: currentPlayer.displayName,
+                      source: { 
+                        type: 'playlist', 
+                        name: playlist.name,
+                        id: playlist.id
+                      }
+                    }]
+                  })
+                }
+              })
+              
+              await updateSongProgress(songs.length, `${playlist.name} (${i + 1}/${selectedPlaylistIds.length})`)
+            }
           }
         } catch (playlistError) {
           console.error(`Error processing playlist ${playlistId}:`, playlistError)
@@ -249,36 +249,23 @@ export async function POST(
       }
     }
 
-    // 8. Finalize
+    // 9. Finalize
     await updateProgress(90, 'Finalizing your music library...')
 
-    // Update player status
-    currentPlayer.loadingProgress = 100
-    currentPlayer.songsLoaded = true
-
-    // Use transaction to update both player status and songs
+    // 🎯 ATOMIC TRANSACTION - Updates both player status and songs
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Update player status in game
-      const latestGame = await tx.game.findUnique({
-        where: { id: game.id }
-      })
-      
-      if (!latestGame) {
-        throw new Error('Game not found')
-      }
-      
-      const latestPlayers = parsePlayersFromJSON(latestGame.players)
-      const playerIndex = latestPlayers.findIndex(p => p.userId === session.user.id)
-      
-      if (playerIndex !== -1) {
-        latestPlayers[playerIndex].loadingProgress = 100
-        latestPlayers[playerIndex].songsLoaded = true
-      }
-      
-      const updatedGame = await tx.game.update({
-        where: { id: game.id },
+      // 1. Mark player as having songs loaded - ATOMIC UPDATE!
+      const updatedPlayer = await tx.gamePlayer.update({
+        where: {
+          gameId_userId: {
+            gameId: game.id,
+            userId: session.user.id
+          }
+        },
         data: {
-          players: playersToJSON(latestPlayers)
+          loadingProgress: 100,
+          songsLoaded: true,  // 🎯 This won't conflict with other player updates!
+          updatedAt: new Date()
         }
       })
       
@@ -291,13 +278,13 @@ export async function POST(
           }
         },
         update: {
-          songs: songs, // Prisma will handle JSON conversion
+          songs: songs,
           updatedAt: new Date()
         },
         create: {
           gameId: game.id,
           playerId: session.user.id,
-          songs: songs // Prisma will handle JSON conversion
+          songs: songs
         }
       })
       
@@ -309,14 +296,13 @@ export async function POST(
 
       let totalSongCount = 0
       allPlayerSongs.forEach(playerSongs => {
-        // Cast the JsonValue to the expected array type
         const songsArray = playerSongs.songs as any[]
         if (Array.isArray(songsArray)) {
           totalSongCount += songsArray.length
         }
       })
       
-      return { updatedGame, gameSongs, totalSongCount }
+      return { updatedPlayer, gameSongs, totalSongCount }
     })
 
     // Emit socket update
@@ -346,28 +332,30 @@ export async function POST(
   } catch (mainError) {
     console.error('Error loading songs:', mainError)
     
-    // Reset player status on error
+    // Reset player status on error - 🎯 ALSO ATOMIC!
     try {
-      if (session?.user?.id && game && currentPlayer && players.length > 0) {
-        const playerIndex = players.findIndex(p => p.userId === session.user.id)
-        
-        if (playerIndex !== -1) {
-          players[playerIndex].loadingProgress = 0
-          players[playerIndex].songsLoaded = false
-          
-          await prisma.game.update({
-            where: { id: game.id },
-            data: { players: playersToJSON(players) }
-          })
-
-          const io = (global as any).io
-          if (io && gameCode) {
-            io.to(gameCode).emit('game-updated', {
-              action: 'player-loading-error',
-              userId: session.user.id,
-              timestamp: new Date().toISOString()
-            })
+      if (session?.user?.id && game) {
+        await prisma.gamePlayer.update({
+          where: {
+            gameId_userId: {
+              gameId: game.id,
+              userId: session.user.id
+            }
+          },
+          data: {
+            loadingProgress: 0,
+            songsLoaded: false,
+            updatedAt: new Date()
           }
+        })
+
+        const io = (global as any).io
+        if (io && gameCode) {
+          io.to(gameCode).emit('game-updated', {
+            action: 'player-loading-error',
+            userId: session.user.id,
+            timestamp: new Date().toISOString()
+          })
         }
       }
     } catch (resetError) {

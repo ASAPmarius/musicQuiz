@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
-import { LobbyPlayer, parsePlayersFromJSON, playersToJSON } from '@/lib/types/game'
 import { Server } from 'socket.io'
 
 export async function POST(request: NextRequest) {
@@ -13,24 +12,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const body = await request.json()
-    const { 
-      gameCode,
-      displayName = session.user.name || 'Player'
-    } = body
+    const { gameCode, displayName } = await request.json()
 
-    // Validate input
-    if (!gameCode || gameCode.length !== 6) {
-      return NextResponse.json({ error: 'Invalid game code' }, { status: 400 })
+    if (!gameCode || !displayName?.trim()) {
+      return NextResponse.json(
+        { error: 'Game code and display name are required' }, 
+        { status: 400 }
+      )
     }
 
-    if (!displayName.trim()) {
-      return NextResponse.json({ error: 'Display name is required' }, { status: 400 })
-    }
+    const upperGameCode = gameCode.toUpperCase()
 
-    // Find the game
+    // Find the game with existing players
     const game = await prisma.game.findUnique({
-      where: { code: gameCode.toUpperCase() },
+      where: { code: upperGameCode },
       include: {
         host: {
           select: {
@@ -38,7 +33,8 @@ export async function POST(request: NextRequest) {
             name: true,
             image: true
           }
-        }
+        },
+        players: true  // Get existing players from GamePlayer table
       }
     })
 
@@ -46,90 +42,102 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Check game status
     if (game.status !== 'WAITING') {
       return NextResponse.json({ 
-        error: game.status === 'PLAYING' ? 'Game already in progress' : 'Game has ended' 
+        error: 'Game has already started' 
       }, { status: 400 })
     }
 
-    // Parse current players with safe conversion
-    const currentPlayers = parsePlayersFromJSON(game.players)
+    // Check if game is full
+    if (game.players.length >= game.maxPlayers) {
+      return NextResponse.json({ 
+        error: 'Game is full' 
+      }, { status: 400 })
+    }
 
     // Check if user is already in the game
-    const existingPlayer = currentPlayers.find((p) => p.userId === session.user.id)
+    const existingPlayer = game.players.find(p => p.userId === session.user.id)
     if (existingPlayer) {
       return NextResponse.json({ 
-        error: 'You are already in this game',
-        game: {
-          id: game.id,
-          code: game.code,
-          status: game.status,
-          maxPlayers: game.maxPlayers,
-          targetScore: game.targetScore,
-          currentPlayers: currentPlayers.length,
-          players: currentPlayers,
-          host: game.host,
-          createdAt: game.createdAt
-        }
-      }, { status: 200 })
+        error: 'You are already in this game' 
+      }, { status: 400 })
     }
 
-    // Check if game is full
-    if (currentPlayers.length >= game.maxPlayers) {
-      return NextResponse.json({ error: 'Game is full' }, { status: 400 })
-    }
-
-    // Check for duplicate display names
-    const nameExists = currentPlayers.some((p) => 
+    // Check if display name is already taken
+    const nameExists = game.players.some(p => 
       p.displayName.toLowerCase() === displayName.trim().toLowerCase()
     )
     if (nameExists) {
       return NextResponse.json({ 
-        error: 'Display name already taken. Please choose a different name.' 
+        error: 'Display name is already taken. Please choose a different name.' 
       }, { status: 400 })
     }
 
-    // Create new player object with proper typing
-    const newPlayer: LobbyPlayer = {
-      userId: session.user.id,
-      displayName: displayName.trim(),
-      spotifyDeviceId: null,
-      deviceName: 'No device selected',
-      playlistsSelected: [],
-      songsLoaded: false,
-      loadingProgress: 0,
-      joinedAt: new Date().toISOString(),
-      isReady: false,
-      isHost: false
-    }
-
-    // Add player to game
-    const updatedPlayers = [...currentPlayers, newPlayer]
-
-    const updatedGame = await prisma.game.update({
-      where: { id: game.id },
-      data: {
-        players: playersToJSON(updatedPlayers) // Convert to JSON
-      },
-      include: {
-        host: {
-          select: {
-            id: true,
-            name: true,
-            image: true
-          }
+    // 🎯 ADD PLAYER TO GAME - Uses GamePlayer table directly
+    const result = await prisma.$transaction(async (tx) => {
+      // Create new player record
+      const newPlayer = await tx.gamePlayer.create({
+        data: {
+          gameId: game.id,
+          userId: session.user.id,
+          displayName: displayName.trim(),
+          spotifyDeviceId: null,
+          deviceName: 'No device selected',
+          playlistsSelected: [],
+          songsLoaded: false,
+          loadingProgress: 0,
+          isReady: false,
+          isHost: false,
+          joinedAt: new Date(),
+          updatedAt: new Date()
         }
-      }
+      })
+
+      // Get all players including the new one
+      const allPlayers = await tx.gamePlayer.findMany({
+        where: { gameId: game.id },
+        orderBy: { joinedAt: 'asc' }
+      })
+
+      return { newPlayer, allPlayers }
     })
+
+    // Format players for response
+    const formattedPlayers = result.allPlayers.map(player => ({
+      id: player.id,
+      userId: player.userId,
+      displayName: player.displayName,
+      spotifyDeviceId: player.spotifyDeviceId,
+      deviceName: player.deviceName,
+      playlistsSelected: player.playlistsSelected,
+      songsLoaded: player.songsLoaded,
+      loadingProgress: player.loadingProgress,
+      joinedAt: player.joinedAt.toISOString(),
+      isReady: player.isReady,
+      isHost: player.isHost
+    }))
+
+    const newPlayerFormatted = {
+      id: result.newPlayer.id,
+      userId: result.newPlayer.userId,
+      displayName: result.newPlayer.displayName,
+      spotifyDeviceId: result.newPlayer.spotifyDeviceId,
+      deviceName: result.newPlayer.deviceName,
+      playlistsSelected: result.newPlayer.playlistsSelected,
+      songsLoaded: result.newPlayer.songsLoaded,
+      loadingProgress: result.newPlayer.loadingProgress,
+      joinedAt: result.newPlayer.joinedAt.toISOString(),
+      isReady: result.newPlayer.isReady,
+      isHost: result.newPlayer.isHost
+    }
 
     try {
       // Emit socket event for real-time updates
       const io = (global as any).io as Server
       if (io) {
-        io.to(gameCode.toUpperCase()).emit('game-updated', {
+        io.to(upperGameCode).emit('game-updated', {
           action: 'player-joined',
-          playerData: newPlayer,
+          playerData: newPlayerFormatted,
           timestamp: new Date().toISOString()
         })
       }
@@ -140,17 +148,17 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `Successfully joined game ${gameCode}`,
+      message: `Successfully joined game ${upperGameCode}`,
       game: {
-        id: updatedGame.id,
-        code: updatedGame.code,
-        status: updatedGame.status,
-        maxPlayers: updatedGame.maxPlayers,
-        targetScore: updatedGame.targetScore,
-        currentPlayers: updatedPlayers.length,
-        players: updatedPlayers,
-        host: updatedGame.host,
-        createdAt: updatedGame.createdAt
+        id: game.id,
+        code: game.code,
+        status: game.status,
+        maxPlayers: game.maxPlayers,
+        targetScore: game.targetScore,
+        currentPlayers: formattedPlayers.length,
+        players: formattedPlayers,
+        host: game.host,
+        createdAt: game.createdAt
       }
     })
 

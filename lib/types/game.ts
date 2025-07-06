@@ -1,17 +1,16 @@
-// 🆕 ADD THESE TO YOUR EXISTING lib/types/game.ts FILE:
-
-// Database/Lobby Player (for game lobby and API routes)
+// 🆕 Updated Database/Lobby Player interface
 export interface LobbyPlayer {
+  id: string              
   userId: string
   displayName: string
   spotifyDeviceId: string | null
   deviceName: string
   playlistsSelected: string[]
-  songsLoaded: boolean
-  loadingProgress: number
+  songsLoaded: boolean    
+  loadingProgress: number 
   joinedAt: string
-  isReady: boolean
-  isHost: boolean
+  isReady: boolean       
+  isHost: boolean         
 }
 
 // Database Game Data (for API routes)
@@ -22,7 +21,7 @@ export interface GameData {
   maxPlayers: number
   targetScore: number
   currentPlayers: number
-  players: LobbyPlayer[]
+  players: LobbyPlayer[]  
   settings: {
     maxPlayers: number
     targetScore: number
@@ -37,54 +36,6 @@ export interface GameData {
   createdAt: string
   updatedAt: string
 }
-
-// 🆕 Type guard to safely convert JSON to LobbyPlayer[]
-export function isLobbyPlayer(obj: any): obj is LobbyPlayer {
-  return (
-    typeof obj === 'object' &&
-    obj !== null &&
-    typeof obj.userId === 'string' &&
-    typeof obj.displayName === 'string' &&
-    (obj.spotifyDeviceId === null || typeof obj.spotifyDeviceId === 'string') &&
-    typeof obj.deviceName === 'string' &&
-    Array.isArray(obj.playlistsSelected) &&
-    typeof obj.songsLoaded === 'boolean' &&
-    typeof obj.loadingProgress === 'number' &&
-    typeof obj.joinedAt === 'string' &&
-    typeof obj.isReady === 'boolean' &&
-    typeof obj.isHost === 'boolean'
-  )
-}
-
-// 🆕 Safe conversion function from Prisma JSON to LobbyPlayer[]
-export function parsePlayersFromJSON(json: any): LobbyPlayer[] {
-  if (!Array.isArray(json)) {
-    return []
-  }
-  
-  return json.filter(isLobbyPlayer)
-}
-
-// 🆕 Convert LobbyPlayer[] back to plain JSON for database storage
-export function playersToJSON(players: LobbyPlayer[]): any {
-  return players.map(player => ({
-    userId: player.userId,
-    displayName: player.displayName,
-    spotifyDeviceId: player.spotifyDeviceId,
-    deviceName: player.deviceName,
-    playlistsSelected: player.playlistsSelected,
-    songsLoaded: player.songsLoaded,
-    loadingProgress: player.loadingProgress,
-    joinedAt: player.joinedAt,
-    isReady: player.isReady,
-    isHost: player.isHost
-  }))
-}
-
-// ================================
-// YOUR EXISTING TYPES BELOW:
-// (keep everything you already have)
-// ================================
 
 export interface GameState {
   code: string
