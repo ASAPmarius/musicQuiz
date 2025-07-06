@@ -175,6 +175,13 @@ export async function POST(
     // 7. PHASE 2: Load songs with accurate progress
     const songs: any[] = []
     const seenSongIds = new Set<string>()
+    
+    // Track songs processed from each source (including duplicates)
+    const sourceStats = {
+      likedSongs: 0,
+      savedAlbums: 0,
+      playlists: 0
+    }
 
     const updateSongProgress = async (processed: number, source: string) => {
       // Now we have REAL total, so progress is accurate
@@ -193,19 +200,23 @@ export async function POST(
         const likedSongs = await likedResponse.json()
         if (Array.isArray(likedSongs)) {
           likedSongs.forEach((track: any) => {
-            if (track && track.id && !seenSongIds.has(track.id)) {
-              seenSongIds.add(track.id)
-              songs.push({
-                id: track.id,
-                name: track.name,
-                artists: track.artists,
-                album: track.album,
-                owners: [{
-                  playerId: session.user.id,
-                  playerName: currentPlayer.displayName,
-                  source: { type: 'liked', name: 'Liked Songs' }
-                }]
-              })
+            if (track && track.id) {
+              sourceStats.likedSongs++ // Count every song processed
+              
+              if (!seenSongIds.has(track.id)) {
+                seenSongIds.add(track.id)
+                songs.push({
+                  id: track.id,
+                  name: track.name,
+                  artists: track.artists,
+                  album: track.album,
+                  owners: [{
+                    playerId: session.user.id,
+                    playerName: currentPlayer.displayName,
+                    source: { type: 'liked', name: 'Liked Songs' }
+                  }]
+                })
+              }
             }
           })
           await updateSongProgress(songs.length, 'Liked Songs')
@@ -237,23 +248,27 @@ export async function POST(
                 const albumTracks = Array.isArray(albumTracksData) ? albumTracksData : (albumTracksData.items || [])
                 
                 albumTracks.forEach((track: any) => {
-                  if (track && track.id && !seenSongIds.has(track.id)) {
-                    seenSongIds.add(track.id)
-                    songs.push({
-                      id: track.id,
-                      name: track.name,
-                      artists: track.artists,
-                      album: track.album,
-                      owners: [{
-                        playerId: session.user.id,
-                        playerName: currentPlayer.displayName,
-                        source: { 
-                          type: 'album', 
-                          name: savedAlbum.name,
-                          id: savedAlbum.id
-                        }
-                      }]
-                    })
+                  if (track && track.id) {
+                    sourceStats.savedAlbums++ // Count every song processed
+                    
+                    if (!seenSongIds.has(track.id)) {
+                      seenSongIds.add(track.id)
+                      songs.push({
+                        id: track.id,
+                        name: track.name,
+                        artists: track.artists,
+                        album: track.album,
+                        owners: [{
+                          playerId: session.user.id,
+                          playerName: currentPlayer.displayName,
+                          source: { 
+                            type: 'album', 
+                            name: savedAlbum.name,
+                            id: savedAlbum.id
+                          }
+                        }]
+                      })
+                    }
                   }
                 })
                 
@@ -296,23 +311,27 @@ export async function POST(
               
               tracks.forEach((item: any) => {
                 const track = item.track || item
-                if (track && track.id && !seenSongIds.has(track.id)) {
-                  seenSongIds.add(track.id)
-                  songs.push({
-                    id: track.id,
-                    name: track.name,
-                    artists: track.artists,
-                    album: track.album,
-                    owners: [{
-                      playerId: session.user.id,
-                      playerName: currentPlayer.displayName,
-                      source: { 
-                        type: 'playlist', 
-                        name: playlist.name, 
-                        id: playlist.id 
-                      }
-                    }]
-                  })
+                if (track && track.id) {
+                  sourceStats.playlists++ // Count every song processed
+                  
+                  if (!seenSongIds.has(track.id)) {
+                    seenSongIds.add(track.id)
+                    songs.push({
+                      id: track.id,
+                      name: track.name,
+                      artists: track.artists,
+                      album: track.album,
+                      owners: [{
+                        playerId: session.user.id,
+                        playerName: currentPlayer.displayName,
+                        source: { 
+                          type: 'playlist', 
+                          name: playlist.name, 
+                          id: playlist.id 
+                        }
+                      }]
+                    })
+                  }
                 }
               })
               
@@ -400,9 +419,9 @@ export async function POST(
       songCount: songs.length,
       totalCachedSongs: result.totalSongCount,
       breakdown: {
-        likedSongs: songs.filter(s => s.owners[0].source.type === 'liked').length,
-        savedAlbums: songs.filter(s => s.owners[0].source.type === 'album').length,
-        playlists: songs.filter(s => s.owners[0].source.type === 'playlist').length
+        likedSongs: sourceStats.likedSongs,
+        savedAlbums: sourceStats.savedAlbums,
+        playlists: sourceStats.playlists
       }
     })
 
