@@ -49,7 +49,6 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       console.log('🔌 Connected to server:', newSocket.id)
       setIsConnected(true)
       
-      // Join the game room if we have a game code AND user info
       if (gameCodeRef.current && userInfoRef.current) {
         console.log('🎯 Joining game with user identification:', userInfoRef.current)
         newSocket.emit('join-game-with-user', {
@@ -57,10 +56,6 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
           userId: userInfoRef.current.userId,
           displayName: userInfoRef.current.displayName
         })
-      } else if (gameCodeRef.current) {
-        // Fallback to old method if no user info
-        console.log('⚠️ Joining game without user identification')
-        newSocket.emit('join-game', gameCodeRef.current)
       }
     })
 
@@ -180,6 +175,18 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       }
     }
   }, [socket, gameCode, userInfo])
+
+  useEffect(() => {
+    // Join the game room when userInfo becomes available (and we're connected)
+    if (socket && gameCode && userInfo && isConnected) {
+      console.log('🎯 UserInfo now available, joining game with identification:', userInfo)
+      socket.emit('join-game-with-user', {
+        gameCode,
+        userId: userInfo.userId,
+        displayName: userInfo.displayName
+      })
+    }
+  }, [socket, gameCode, userInfo, isConnected])
 
   // Helper functions for sending events
   const updatePlayerStatus = (status: PlayerStatus) => {
