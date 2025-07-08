@@ -2,10 +2,8 @@
 import NextAuth, { NextAuthOptions } from 'next-auth'
 import SpotifyProvider from 'next-auth/providers/spotify'
 import { PrismaAdapter } from "@next-auth/prisma-adapter"
-import { PrismaClient } from "@prisma/client"
 import { JWT } from "next-auth/jwt"
-
-const prisma = new PrismaClient()
+import { prisma } from "../../../lib/prisma"
 
 // Function to refresh Spotify access token
 async function refreshAccessToken(token: JWT): Promise<JWT> {

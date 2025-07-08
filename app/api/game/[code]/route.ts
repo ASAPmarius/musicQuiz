@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
-import { PrismaClient } from '@prisma/client'
 import { LobbyPlayer, GameData } from '@/lib/types/game'
-
-const prisma = new PrismaClient()
+import { prisma } from '@/lib/prisma'
 
 interface RouteParams {
   params: Promise<{
@@ -268,8 +266,6 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       { error: 'Failed to update player status', details: error instanceof Error ? error.message : 'Unknown error' }, 
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }
 
@@ -330,7 +326,5 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
       { error: 'Failed to leave game' }, 
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }

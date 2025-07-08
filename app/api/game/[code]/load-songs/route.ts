@@ -1,13 +1,7 @@
-// ========================================
-// COMPLETE FIXED VERSION - NO ARTIFICIAL LIMITS
-// ========================================
-
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
+import { prisma } from '@/lib/prisma'
 
 interface RouteParams {
   params: Promise<{
@@ -442,7 +436,5 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       { error: 'Failed to load songs', details: mainError instanceof Error ? mainError.message : 'Unknown error' }, 
       { status: 500 }
     )
-  } finally {
-    await prisma.$disconnect()
   }
 }

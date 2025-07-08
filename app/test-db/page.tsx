@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
+import { prisma } from '@/lib/prisma'
 
 export default async function TestDB() {
   let dbStatus = "Not connected"
@@ -16,8 +14,6 @@ export default async function TestDB() {
     console.error('Database connection error:', err)
     dbStatus = "Connection failed"
     error = err.message
-  } finally {
-    await prisma.$disconnect()
   }
 
   return (
