@@ -139,6 +139,60 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       )
     }
 
+    const saveSongsBatch = async (songsToSave: any[], isFirstBatch: boolean = false) => {
+      try {
+        if (isFirstBatch) {
+          // First batch: create or replace the entire record
+          await prisma.gameSongs.upsert({
+            where: {
+              gameId_playerId: {
+                gameId: game.id,
+                playerId: session.user.id
+              }
+            },
+            update: {
+              songs: songsToSave,
+              updatedAt: new Date()
+            },
+            create: {
+              gameId: game.id,
+              playerId: session.user.id,
+              songs: songsToSave
+            }
+          })
+        } else {
+          // Subsequent batches: get existing songs and append new ones
+          const existingRecord = await prisma.gameSongs.findUnique({
+            where: {
+              gameId_playerId: {
+                gameId: game.id,
+                playerId: session.user.id
+              }
+            }
+          })
+
+          const existingSongs = (existingRecord?.songs as any[]) || []
+          const combinedSongs = [...existingSongs, ...songsToSave]
+
+          await prisma.gameSongs.update({
+            where: {
+              gameId_playerId: {
+                gameId: game.id,
+                playerId: session.user.id
+              }
+            },
+            data: {
+              songs: combinedSongs,
+              updatedAt: new Date()
+            }
+          })
+        }
+      } catch (error) {
+        console.error('Error saving songs batch:', error)
+        throw error
+      }
+    }
+
     // Initialize
     const songs: any[] = []
     const seenSongIds = new Set<string>()
@@ -170,6 +224,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     // Process selected playlists
     await updateProgress(20, 'Processing selected playlists...')
     
+    // Replace the entire playlist processing section with this:
     for (let i = 0; i < selectedPlaylistIds.length; i++) {
       const playlistId = selectedPlaylistIds[i]
       const playlist = allPlaylists.find((p: any) => p.id === playlistId)
@@ -191,7 +246,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           session.user.id
         )
 
-        // Handle pagination for large playlists
         let nextTracksUrl = tracksData.next
         const allTracks = [...(tracksData.items || [])]
 
@@ -202,11 +256,12 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         }
 
         const tracks = allTracks.map((item: any) => item.track).filter(Boolean)
+        const batchSongs: any[] = []
 
         tracks.forEach((track: any) => {
           if (track && track.id && !seenSongIds.has(track.id)) {
             seenSongIds.add(track.id)
-            songs.push({
+            const songData = {
               id: track.id,
               name: track.name,
               artists: track.artists,
@@ -220,9 +275,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
                   id: playlist.id
                 }
               }]
-            })
+            }
+            songs.push(songData)
+            batchSongs.push(songData)
           }
         })
+
+        // 🆕 Save this playlist's songs immediately
+        if (batchSongs.length > 0) {
+          await saveSongsBatch(batchSongs, i === 0 && songs.length === batchSongs.length)
+          console.log(`💾 Saved ${batchSongs.length} songs from "${playlist.name}"`)
+        }
 
         await updateSmartProgress(songs.length, `"${playlist.name}"`, 'playlists')
         
@@ -234,6 +297,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     await updateProgress(50, 'Loading your liked songs...')
 
     try {
+      const batchSongs: any[] = []
       let allLikedSongs: any[] = []
       let nextUrl: string | null = 'https://api.spotify.com/v1/me/tracks?limit=50'
       
@@ -241,7 +305,6 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         const likedResponse = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
         
         if (likedResponse.items) {
-          // Extract the track from each saved track item
           const tracks = likedResponse.items.map((item: any) => item.track).filter(Boolean)
           allLikedSongs = allLikedSongs.concat(tracks)
         }
@@ -252,7 +315,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       allLikedSongs.forEach((track: any) => {
         if (track && track.id && !seenSongIds.has(track.id)) {
           seenSongIds.add(track.id)
-          songs.push({
+          const songData = {
             id: track.id,
             name: track.name,
             artists: track.artists,
@@ -262,9 +325,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
               playerName: currentPlayer.displayName,
               source: { type: 'liked', name: 'Liked Songs' }
             }]
-          })
+          }
+          songs.push(songData)
+          batchSongs.push(songData)
         }
       })
+      
+      if (batchSongs.length > 0) {
+        await saveSongsBatch(batchSongs, songs.length === batchSongs.length)
+        console.log(`💾 Saved ${batchSongs.length} liked songs`)
+      }
       
       await updateSmartProgress(songs.length, 'Liked Songs', 'liked')
       
@@ -344,60 +414,35 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       console.error('Error processing saved albums:', albumsError)
     }
 
-    await updateProgress(95, 'Finalizing and saving songs...')
+    await updateProgress(95, 'Finalizing...')
 
-    // 4. Save to database in transaction
-    const result = await prisma.$transaction(async (tx) => {
-      // Update player status
-      const updatedPlayer = await tx.gamePlayer.update({
-        where: {
-          gameId_userId: {
-            gameId: game.id,
-            userId: session.user.id
-          }
-        },
-        data: {
-          songsLoaded: true,
-          loadingProgress: 100,
-          playlistsSelected: selectedPlaylistIds,
-          updatedAt: new Date()
-        }
-      })
-      
-      // Store songs separately for this player
-      const gameSongs = await tx.gameSongs.upsert({
-        where: {
-          gameId_playerId: {
-            gameId: game.id,
-            playerId: session.user.id
-          }
-        },
-        update: {
-          songs: songs,
-          updatedAt: new Date()
-        },
-        create: {
+    const result = await prisma.gamePlayer.update({
+      where: {
+        gameId_userId: {
           gameId: game.id,
-          playerId: session.user.id,
-          songs: songs
+          userId: session.user.id
         }
-      })
-      
-      // Get total song count from all players
-      const allPlayerSongs = await tx.gameSongs.findMany({
-        where: { gameId: game.id },
-        select: { songs: true }
-      })
+      },
+      data: {
+        songsLoaded: true,
+        loadingProgress: 100,
+        playlistsSelected: selectedPlaylistIds,
+        updatedAt: new Date()
+      }
+    })
 
-      let totalSongCount = 0
-      allPlayerSongs.forEach(playerSongs => {
-        const songsArray = playerSongs.songs as any[]
-        if (Array.isArray(songsArray)) {
-          totalSongCount += songsArray.length
-        }
-      })
-      
-      return { updatedPlayer, gameSongs, totalSongCount }
+    // Get total song count (quick query)
+    const allPlayerSongs = await prisma.gameSongs.findMany({
+      where: { gameId: game.id },
+      select: { songs: true }
+    })
+
+    let totalSongCount = 0
+    allPlayerSongs.forEach(playerSongs => {
+      const songsArray = playerSongs.songs as any[]
+      if (Array.isArray(songsArray)) {
+        totalSongCount += songsArray.length
+      }
     })
 
     // Final progress update
@@ -410,7 +455,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         action: 'player-songs-ready',
         userId: session.user.id,
         songCount: songs.length,
-        totalCachedSongs: result.totalSongCount,
+        totalCachedSongs: totalSongCount,
         timestamp: new Date().toISOString()
       })
     }
@@ -420,7 +465,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     return NextResponse.json({ 
       success: true, 
       songCount: songs.length,
-      totalCachedSongs: result.totalSongCount,
+      totalCachedSongs: totalSongCount,
       breakdown: {
         likedSongs: songs.filter(s => s.owners[0].source.type === 'liked').length,
         savedAlbums: songs.filter(s => s.owners[0].source.type === 'album').length,
