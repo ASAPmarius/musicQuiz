@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { useSocket } from '@/lib/useSocket'
 import { useTokenRefresh } from '@/lib/hooks/useTokenRefresh'
 import { LobbyPlayer, GameData } from '@/lib/types/game'
+
 
 interface SongLoadingProps {
   params: Promise<{
@@ -45,14 +46,15 @@ export default function SongLoading({ params }: SongLoadingProps) {
   const lastFetchTime = useRef<number>(0)
   const fetchTimeout = useRef<NodeJS.Timeout | null>(null)
 
-  const { isConnected, updatePlayerStatus, socket } = useSocket(
-    gameCode,
-    session?.user?.id && currentPlayer?.displayName 
-      ? { userId: session.user.id, displayName: currentPlayer.displayName }
-      : undefined
-  )
+  const userInfo = useMemo(() => {
+    if (session?.user?.id && currentPlayer?.displayName) {
+      return { userId: session.user.id, displayName: currentPlayer.displayName }
+    }
+    return undefined
+  }, [session?.user?.id, currentPlayer?.displayName]) // Only change when these values actually change
 
-  // 🆕 EARLY RETURN FOR AUTH ISSUES
+  const { isConnected, updatePlayerStatus, socket } = useSocket(gameCode, userInfo)
+
   if (needsReauth) {
     return (
       <div className="min-h-screen flex items-center justify-center">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useSession } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { useSocket } from '@/lib/useSocket'
@@ -24,18 +24,19 @@ export default function GameLobby({ params }: GameLobbyProps) {
   const [currentPlayer, setCurrentPlayer] = useState<LobbyPlayer | null>(null)
   const [showDeviceModal, setShowDeviceModal] = useState(false)
 
-  // Socket.io connection for real-time updates
+const userInfo = useMemo(() => {
+  if (session?.user?.id && currentPlayer?.displayName) {
+    return { userId: session.user.id, displayName: currentPlayer.displayName }
+  }
+  return undefined
+}, [session?.user?.id, currentPlayer?.displayName])
+
 const { 
   isConnected, 
   updatePlayerStatus, 
   sendGameAction,
   socket  
-} = useSocket(
-  gameCode,
-  session?.user?.id && currentPlayer?.displayName 
-    ? { userId: session.user.id, displayName: currentPlayer.displayName }
-    : undefined
-)
+} = useSocket(gameCode, userInfo) // ← Use memoized userInfo
 
 useEffect(() => {
   if (!socket) return

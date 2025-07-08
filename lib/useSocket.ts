@@ -34,45 +34,44 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
   
   // Store the latest gameCode in a ref to avoid reconnecting unnecessarily
   const gameCodeRef = useRef<string | undefined>(gameCode)
-  const userInfoRef = useRef<UserInfo | undefined>(userInfo)
 
+  // 🔧 FIX: Create socket connection ONCE and keep it stable
   useEffect(() => {
-    // Initialize socket connection
+    console.log('🔌 Creating socket connection...')
+    
     // Use current origin (works with ngrok, localhost, and production)
     const socketUrl = process.env.NODE_ENV === 'production' 
-      ? undefined  // Use current origin in production
-      : window.location.origin // Use current origin in development (supports ngrok)
+      ? undefined  // Will use current origin
+      : 'http://localhost:3000'
     
-    const newSocket = io(socketUrl)
-    
-    newSocket.on('connect', () => {
-      console.log('🔌 Connected to server:', newSocket.id)
-      setIsConnected(true)
-      
-      if (gameCodeRef.current && userInfoRef.current) {
-        console.log('🎯 Joining game with user identification:', userInfoRef.current)
-        newSocket.emit('join-game-with-user', {
-          gameCode: gameCodeRef.current,
-          userId: userInfoRef.current.userId,
-          displayName: userInfoRef.current.displayName
-        })
-      }
+    const newSocket = io(socketUrl, {
+      transports: ['websocket'],
+      autoConnect: true
     })
 
-    newSocket.on('disconnect', () => {
-      console.log('🔌 Disconnected from server')
+    newSocket.on('connect', () => {
+      console.log('✅ Socket connected:', newSocket.id)
+      setIsConnected(true)
+    })
+
+    newSocket.on('disconnect', (reason) => {
+      console.log('🔌 Socket disconnected:', reason)
       setIsConnected(false)
     })
 
+    // Game-related events
     newSocket.on('game-updated', (data) => {
       console.log('🎮 Game updated:', data)
-      // This will be handled by the game page component
-      // We just log it here for debugging
+      setGameState(data)
     })
 
-    // Listen for player status updates
+    newSocket.on('game-state-changed', (data) => {
+      console.log('🔄 Game state changed:', data)
+      setGameState(data)
+    })
+
     newSocket.on('player-status-updated', (data) => {
-      console.log('🔄 Player status updated:', data)
+      console.log('📊 Player status updated:', data)
       setPlayerStatuses(prev => {
         const updated = new Map(prev)
         updated.set(data.socketId, data)
@@ -80,24 +79,7 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       })
     })
 
-    // Listen for game state changes
-    newSocket.on('game-state-changed', (data) => {
-      console.log('🎮 Game state changed:', data)
-      setGameState(data)
-    })
-
-    // Listen for votes
-    newSocket.on('vote-submitted', (data) => {
-      console.log('🗳️ Someone voted:', data)
-      // Update UI to show someone voted (without revealing the vote)
-    })
-
-    newSocket.on('votes-revealed', (data) => {
-      console.log('📊 Votes revealed:', data)
-      // Show all votes and results
-    })
-
-    // 🆕 NEW: Listen for player connection/disconnection events
+    // Player connection events
     newSocket.on('player-connected', (data) => {
       console.log('🟢 Player connected:', data)
       // This will be handled by the game page component
@@ -108,7 +90,7 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       // This will be handled by the game page component
     })
 
-    // 🆕 NEW: Listen for legacy player joined/left events (for backward compatibility)
+    // Legacy player joined/left events (for backward compatibility)
     newSocket.on('player-joined', (data) => {
       console.log('👥 Player joined (legacy):', data)
       // This will be handled by the game page component
@@ -125,12 +107,7 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       console.log('🧹 Cleaning up socket connection')
       newSocket.close()
     }
-  }, [userInfo?.userId, userInfo?.displayName]) // Add userInfo to dependencies
-
-  // Update refs when props change
-  useEffect(() => {
-    userInfoRef.current = userInfo
-  }, [userInfo])
+  }, []) // ← EMPTY dependency array - create once and keep stable!
 
   // Update game room when gameCode changes
   useEffect(() => {
@@ -143,12 +120,12 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       
       // Join new room
       if (gameCode) {
-        if (userInfoRef.current) {
-          console.log('🔄 Joining new game room with user identification:', gameCode, userInfoRef.current)
+        if (userInfo) {
+          console.log('🔄 Joining new game room with user identification:', gameCode, userInfo)
           socket.emit('join-game-with-user', {
             gameCode,
-            userId: userInfoRef.current.userId,
-            displayName: userInfoRef.current.displayName
+            userId: userInfo.userId,
+            displayName: userInfo.displayName
           })
         } else {
           console.log('🔄 Joining new game room (legacy):', gameCode)
@@ -158,35 +135,27 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
       
       gameCodeRef.current = gameCode
     }
-  }, [socket, gameCode])
+  }, [socket, gameCode, userInfo])
 
-  // Handle reconnection when user info changes
+  // 🔧 FIX: Handle joining game room when user info becomes available (SEPARATE effect)
+  const hasJoinedRef = useRef<string | null>(null) // Track if we've already joined with this userInfo
+  
   useEffect(() => {
-    if (socket && gameCode && userInfo && userInfoRef.current) {
-      // Check if user info actually changed
-      const prevUserInfo = userInfoRef.current
-      if (prevUserInfo.userId !== userInfo.userId || prevUserInfo.displayName !== userInfo.displayName) {
-        console.log('🔄 User info changed, reconnecting to room:', userInfo)
+    if (socket && gameCode && userInfo && isConnected) {
+      const joinKey = `${gameCode}-${userInfo.userId}-${userInfo.displayName}`
+      
+      // Only join if we haven't already joined with this exact user info
+      if (hasJoinedRef.current !== joinKey) {
+        console.log('🎯 UserInfo now available, joining game with identification:', userInfo)
         socket.emit('join-game-with-user', {
           gameCode,
           userId: userInfo.userId,
           displayName: userInfo.displayName
         })
+        hasJoinedRef.current = joinKey
       }
     }
-  }, [socket, gameCode, userInfo])
-
-  useEffect(() => {
-    // Join the game room when userInfo becomes available (and we're connected)
-    if (socket && gameCode && userInfo && isConnected) {
-      console.log('🎯 UserInfo now available, joining game with identification:', userInfo)
-      socket.emit('join-game-with-user', {
-        gameCode,
-        userId: userInfo.userId,
-        displayName: userInfo.displayName
-      })
-    }
-  }, [socket, gameCode, userInfo, isConnected])
+  }, [socket, gameCode, userInfo, isConnected]) // ← This can change, but won't recreate socket
 
   // Helper functions for sending events
   const updatePlayerStatus = (status: PlayerStatus) => {
