@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
+import { 
+  makeSpotifyRequest, 
+  makeHighPrioritySpotifyRequest, 
+  makeLowPrioritySpotifyRequest 
+} from '@/lib/spotify-api-wrapper'
 
 interface RouteParams {
   params: Promise<{

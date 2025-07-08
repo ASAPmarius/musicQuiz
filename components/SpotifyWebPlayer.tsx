@@ -43,41 +43,41 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
   const [error, setError] = useState<string>('')
   const [transferringPlayback, setTransferringPlayback] = useState(false)
 
+  const [rateLimiterStatus, setRateLimiterStatus] = useState<{
+    tokens: number
+    queueLength: number
+  } | null>(null)
+
+  const checkRateLimiterStatus = useCallback(async () => {
+    if (!session?.user?.id) return
+    
+    try {
+      const { spotifyRateLimiter } = await import('@/lib/rate-limiter')
+      const status = spotifyRateLimiter.getStatus(session.user.id)
+      setRateLimiterStatus(status)
+    } catch (error) {
+      console.error('Error checking rate limiter status:', error)
+    }
+  }, [session?.user?.id])
+
   // Helper to make Spotify API calls
   const spotifyFetch = useCallback(async (endpoint: string, options: RequestInit = {}) => {
-    if (!session?.accessToken) throw new Error('No access token')
-    
-    const response = await fetch(`https://api.spotify.com/v1${endpoint}`, {
-      ...options,
-      headers: {
-        'Authorization': `Bearer ${(session as any).accessToken}`,
-        'Content-Type': 'application/json',
-        ...options.headers
-      }
-    })
-
-    // Check for empty responses FIRST
-    if (response.status === 204 || response.headers.get('content-length') === '0') {
-      return null
+    if (!session?.accessToken || !session?.user?.id) {
+      throw new Error('No access token or user ID available')
     }
 
-    // Only try to parse JSON if we have content
-    let data = null
-    try {
-      data = await response.json()
-    } catch (e) {
-      // If JSON parsing fails on a successful response, just return null
-      if (response.ok) return null
-      // Otherwise throw an error
-      throw new Error(`API Error: ${response.status}`)
-    }
+    // Import the rate limiter at the top of your file
+    const { makeHighPrioritySpotifyRequest } = await import('@/lib/spotify-api-wrapper')
     
-    if (!response.ok) {
-      const errorMessage = data?.error?.message || `API Error: ${response.status}`
-      throw new Error(errorMessage)
-    }
+    const url = `https://api.spotify.com/v1${endpoint}`
     
-    return data
+    // Use high priority for playback control (user is actively interacting)
+    return makeHighPrioritySpotifyRequest(
+      url,
+      session.accessToken,
+      session.user.id,
+      options
+    )
   }, [session])
 
   // Fetch available devices
@@ -244,6 +244,7 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
       setIsLoading(true)
       await fetchDevices()
       await fetchPlaybackState()
+      await checkRateLimiterStatus()  // <- Add this
       setIsLoading(false)
     }
 
@@ -252,10 +253,11 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     // Poll for updates every 5 seconds
     const interval = setInterval(() => {
       fetchPlaybackState()
+      checkRateLimiterStatus()  // <- Add this
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [session, fetchDevices, fetchPlaybackState])
+  }, [session, fetchDevices, fetchPlaybackState, checkRateLimiterStatus])
 
   // Handle trackUri changes
   useEffect(() => {
@@ -274,12 +276,13 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
         <div className={`px-3 py-1 rounded-full text-sm ${devices.length > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
           Devices: {devices.length}
         </div>
-        <div className={`px-3 py-1 rounded-full text-sm ${activeDevice ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}`}>
-          Active: {activeDevice ? activeDevice.name : 'None'}
+        <div className={`px-3 py-1 rounded-full text-sm ${activeDevice ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}>
+          Active: {activeDevice?.name || 'None'}
         </div>
-        {playbackState && (
-          <div className={`px-3 py-1 rounded-full text-sm ${playbackState.is_playing ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-            {playbackState.is_playing ? '▶️ Playing' : '⏸️ Paused'}
+        {/* NEW: Rate limiter status */}
+        {rateLimiterStatus && (
+          <div className="px-3 py-1 rounded-full text-sm bg-purple-100 text-purple-700">
+            Tokens: {rateLimiterStatus.tokens} | Queue: {rateLimiterStatus.queueLength}
           </div>
         )}
       </div>
