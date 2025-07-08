@@ -146,16 +146,25 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     await updateProgress(5, 'Starting song collection...')
 
     await updateProgress(10, 'Loading your playlists...')
-    
-    const playlistsResponse = await fetch(`${baseUrl}/api/spotify/playlists`, {
-      headers: { 'Authorization': `Bearer ${accessToken}` }
-    })
 
-    if (!playlistsResponse.ok) {
-      throw new Error(`Failed to fetch playlists: ${playlistsResponse.status}`)
+    const playlistsResponse = await makeSpotifyRequest(
+      'https://api.spotify.com/v1/me/playlists?limit=50',
+      accessToken,
+      session.user.id // This is your userId for rate limiting
+    )
+
+    // Handle pagination if there are more playlists
+    let nextUrl = playlistsResponse.next
+    const allPlaylistItems = [...(playlistsResponse.items || [])]
+
+    while (nextUrl) {
+      const nextBatch = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
+      allPlaylistItems.push(...(nextBatch.items || []))
+      nextUrl = nextBatch.next
     }
 
-    const allPlaylists = await playlistsResponse.json()
+    const allPlaylists = allPlaylistItems
+
     await updateProgress(15, 'Playlists loaded successfully')
 
     // Process selected playlists
@@ -176,17 +185,23 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           `Loading "${playlist.name}" (${i + 1}/${selectedPlaylistIds.length})`
         )
 
-        const tracksResponse = await fetch(`${baseUrl}/api/spotify/playlist/${playlistId}/tracks`, {
-          headers: { 'Authorization': `Bearer ${accessToken}` }
-        })
+        const tracksData = await makeSpotifyRequest(
+          `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`,
+          accessToken,
+          session.user.id
+        )
 
-        if (!tracksResponse.ok) {
-          console.error(`Failed to fetch tracks for playlist ${playlist.name}:`, tracksResponse.status)
-          continue
+        // Handle pagination for large playlists
+        let nextTracksUrl = tracksData.next
+        const allTracks = [...(tracksData.items || [])]
+
+        while (nextTracksUrl) {
+          const nextTracksBatch = await makeSpotifyRequest(nextTracksUrl, accessToken, session.user.id)
+          allTracks.push(...(nextTracksBatch.items || []))
+          nextTracksUrl = nextTracksBatch.next
         }
 
-        const tracksData = await tracksResponse.json()
-        const tracks = Array.isArray(tracksData) ? tracksData : (tracksData.items || [])
+        const tracks = allTracks.map((item: any) => item.track).filter(Boolean)
 
         tracks.forEach((track: any) => {
           if (track && track.id && !seenSongIds.has(track.id)) {
@@ -216,104 +231,115 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // 2. 🔧 FIXED: Fetch ALL liked songs (NO LIMITS)
     await updateProgress(50, 'Loading your liked songs...')
-    
-    try {
-      const likedResponse = await fetch(`${baseUrl}/api/spotify/liked-songs`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      })
 
-      if (likedResponse.ok) {
-        const likedSongs = await likedResponse.json()
+    try {
+      let allLikedSongs: any[] = []
+      let nextUrl: string | null = 'https://api.spotify.com/v1/me/tracks?limit=50'
+      
+      while (nextUrl) {
+        const likedResponse = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
         
-        if (Array.isArray(likedSongs)) {
-          likedSongs.forEach((track: any) => {
-            if (track && track.id && !seenSongIds.has(track.id)) {
-              seenSongIds.add(track.id)
-              songs.push({
-                id: track.id,
-                name: track.name,
-                artists: track.artists,
-                album: track.album,
-                owners: [{
-                  playerId: session.user.id,
-                  playerName: currentPlayer.displayName,
-                  source: { type: 'liked', name: 'Liked Songs' }
-                }]
-              })
-            }
-          })
-          
-          await updateSmartProgress(songs.length, 'Liked Songs', 'liked')
+        if (likedResponse.items) {
+          // Extract the track from each saved track item
+          const tracks = likedResponse.items.map((item: any) => item.track).filter(Boolean)
+          allLikedSongs = allLikedSongs.concat(tracks)
         }
+        
+        nextUrl = likedResponse.next
       }
+
+      allLikedSongs.forEach((track: any) => {
+        if (track && track.id && !seenSongIds.has(track.id)) {
+          seenSongIds.add(track.id)
+          songs.push({
+            id: track.id,
+            name: track.name,
+            artists: track.artists,
+            album: track.album,
+            owners: [{
+              playerId: session.user.id,
+              playerName: currentPlayer.displayName,
+              source: { type: 'liked', name: 'Liked Songs' }
+            }]
+          })
+        }
+      })
+      
+      await updateSmartProgress(songs.length, 'Liked Songs', 'liked')
+      
     } catch (likedError) {
       console.error('Error processing liked songs:', likedError)
     }
 
-    // 3. 🔧 FIXED: Fetch ALL saved albums (NO LIMITS)
     await updateProgress(70, 'Loading your saved albums...')
-    
+
     try {
-      const albumsResponse = await fetch(`${baseUrl}/api/spotify/saved-albums`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` }
-      })
-
-      if (albumsResponse.ok) {
-        const savedAlbums = await albumsResponse.json()
+      let allSavedAlbums: any[] = []
+      let nextUrl: string | null = 'https://api.spotify.com/v1/me/albums?limit=50'
+      
+      while (nextUrl) {
+        const albumsResponse = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
         
-        if (Array.isArray(savedAlbums)) {
-          // 🔧 FIXED: Process ALL albums (not just 20!)
-          for (let i = 0; i < savedAlbums.length; i++) {
-            const savedAlbum = savedAlbums[i]
-            
-            try {
-              await updateProgress(
-                Math.round(70 + (i / savedAlbums.length) * 20),
-                `Loading album "${savedAlbum.name}" (${i + 1}/${savedAlbums.length})`
-              )
+        if (albumsResponse.items) {
+          // Extract the album from each saved album item
+          const albums = albumsResponse.items.map((item: any) => item.album).filter(Boolean)
+          allSavedAlbums = allSavedAlbums.concat(albums)
+        }
+        
+        nextUrl = albumsResponse.next
+      }
 
-              // Rate limiting to avoid hitting Spotify limits
-              await new Promise(resolve => setTimeout(resolve, 100))
+      // Process each saved album
+      for (let i = 0; i < allSavedAlbums.length; i++) {
+        const savedAlbum = allSavedAlbums[i]
+        
+        try {
+          await updateProgress(
+            Math.round(70 + (i / allSavedAlbums.length) * 20),
+            `Loading album "${savedAlbum.name}" (${i + 1}/${allSavedAlbums.length})`
+          )
 
-              const albumTracksResponse = await fetch(`${baseUrl}/api/spotify/album/${savedAlbum.id}/tracks`, {
-                headers: { 'Authorization': `Bearer ${accessToken}` }
-              })
-              
-              if (albumTracksResponse.ok) {
-                const albumTracksData = await albumTracksResponse.json()
-                const albumTracks = Array.isArray(albumTracksData) ? albumTracksData : (albumTracksData.items || [])
-              
-                albumTracks.forEach((track: any) => {
-                  if (track && track.id && !seenSongIds.has(track.id)) {
-                    seenSongIds.add(track.id)
-                    songs.push({
-                      id: track.id,
-                      name: track.name,
-                      artists: track.artists,
-                      album: savedAlbum.name,
-                      owners: [{
-                        playerId: session.user.id,
-                        playerName: currentPlayer.displayName,
-                        source: { 
-                          type: 'album', 
-                          name: savedAlbum.name,
-                          id: savedAlbum.id
-                        }
-                      }]
-                    })
-                  }
+          // Rate limiting to avoid hitting Spotify limits
+          await new Promise(resolve => setTimeout(resolve, 100))
+
+          // 🔧 FIX: Direct Spotify API call for album tracks
+          const albumTracksResponse = await makeSpotifyRequest(
+            `https://api.spotify.com/v1/albums/${savedAlbum.id}/tracks?limit=50`,
+            accessToken,
+            session.user.id
+          )
+          
+          if (albumTracksResponse.items) {
+            albumTracksResponse.items.forEach((track: any) => {
+              if (track && track.id && !seenSongIds.has(track.id)) {
+                seenSongIds.add(track.id)
+                songs.push({
+                  id: track.id,
+                  name: track.name,
+                  artists: track.artists,
+                  album: savedAlbum, // Use the full album object from saved albums
+                  owners: [{
+                    playerId: session.user.id,
+                    playerName: currentPlayer.displayName,
+                    source: { 
+                      type: 'album', 
+                      name: savedAlbum.name,
+                      id: savedAlbum.id 
+                    }
+                  }]
                 })
-                
-                await updateSmartProgress(songs.length, `"${savedAlbum.name}"`, 'albums')
               }
-            } catch (albumError) {
-              console.error(`Error processing album ${savedAlbum.name}:`, albumError)
-            }
+            })
+            
+            await updateSmartProgress(songs.length, `"${savedAlbum.name}"`, 'albums')
           }
+          
+        } catch (albumError) {
+          console.error(`Error processing album ${savedAlbum.id}:`, albumError)
         }
       }
+      
     } catch (albumsError) {
       console.error('Error processing saved albums:', albumsError)
     }
