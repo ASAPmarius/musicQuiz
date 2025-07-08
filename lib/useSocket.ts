@@ -21,7 +21,12 @@ interface Vote {
   selectedPlayers: string[] // Array of player IDs they think own the song
 }
 
-export function useSocket(gameCode?: string) {
+interface UserInfo {
+  userId: string
+  displayName: string
+}
+
+export function useSocket(gameCode?: string, userInfo?: UserInfo) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [gameState, setGameState] = useState<any>(null)
@@ -29,6 +34,7 @@ export function useSocket(gameCode?: string) {
   
   // Store the latest gameCode in a ref to avoid reconnecting unnecessarily
   const gameCodeRef = useRef<string | undefined>(gameCode)
+  const userInfoRef = useRef<UserInfo | undefined>(userInfo)
 
   useEffect(() => {
     // Initialize socket connection
@@ -43,8 +49,17 @@ export function useSocket(gameCode?: string) {
       console.log('🔌 Connected to server:', newSocket.id)
       setIsConnected(true)
       
-      // Join the game room if we have a game code
-      if (gameCodeRef.current) {
+      // Join the game room if we have a game code AND user info
+      if (gameCodeRef.current && userInfoRef.current) {
+        console.log('🎯 Joining game with user identification:', userInfoRef.current)
+        newSocket.emit('join-game-with-user', {
+          gameCode: gameCodeRef.current,
+          userId: userInfoRef.current.userId,
+          displayName: userInfoRef.current.displayName
+        })
+      } else if (gameCodeRef.current) {
+        // Fallback to old method if no user info
+        console.log('⚠️ Joining game without user identification')
         newSocket.emit('join-game', gameCodeRef.current)
       }
     })
@@ -87,29 +102,84 @@ export function useSocket(gameCode?: string) {
       // Show all votes and results
     })
 
+    // 🆕 NEW: Listen for player connection/disconnection events
+    newSocket.on('player-connected', (data) => {
+      console.log('🟢 Player connected:', data)
+      // This will be handled by the game page component
+    })
+
+    newSocket.on('player-disconnected', (data) => {
+      console.log('🔴 Player disconnected:', data)
+      // This will be handled by the game page component
+    })
+
+    // 🆕 NEW: Listen for legacy player joined/left events (for backward compatibility)
+    newSocket.on('player-joined', (data) => {
+      console.log('👥 Player joined (legacy):', data)
+      // This will be handled by the game page component
+    })
+
+    newSocket.on('player-left', (data) => {
+      console.log('👋 Player left (legacy):', data)
+      // This will be handled by the game page component
+    })
+
     setSocket(newSocket)
 
     return () => {
+      console.log('🧹 Cleaning up socket connection')
       newSocket.close()
     }
-  }, [])
+  }, [userInfo?.userId, userInfo?.displayName]) // Add userInfo to dependencies
+
+  // Update refs when props change
+  useEffect(() => {
+    userInfoRef.current = userInfo
+  }, [userInfo])
 
   // Update game room when gameCode changes
   useEffect(() => {
     if (socket && gameCode !== gameCodeRef.current) {
       // Leave old room
       if (gameCodeRef.current) {
+        console.log('👋 Leaving old game room:', gameCodeRef.current)
         socket.emit('leave-game', gameCodeRef.current)
       }
       
       // Join new room
       if (gameCode) {
-        socket.emit('join-game', gameCode)
+        if (userInfoRef.current) {
+          console.log('🔄 Joining new game room with user identification:', gameCode, userInfoRef.current)
+          socket.emit('join-game-with-user', {
+            gameCode,
+            userId: userInfoRef.current.userId,
+            displayName: userInfoRef.current.displayName
+          })
+        } else {
+          console.log('🔄 Joining new game room (legacy):', gameCode)
+          socket.emit('join-game', gameCode)
+        }
       }
       
       gameCodeRef.current = gameCode
     }
   }, [socket, gameCode])
+
+  // Handle reconnection when user info changes
+  useEffect(() => {
+    if (socket && gameCode && userInfo && userInfoRef.current) {
+      // Check if user info actually changed
+      const prevUserInfo = userInfoRef.current
+      if (prevUserInfo.userId !== userInfo.userId || prevUserInfo.displayName !== userInfo.displayName) {
+        console.log('🔄 User info changed, reconnecting to room:', userInfo)
+        socket.emit('join-game-with-user', {
+          gameCode,
+          userId: userInfo.userId,
+          displayName: userInfo.displayName
+        })
+      }
+    }
+  }, [socket, gameCode, userInfo])
 
   // Helper functions for sending events
   const updatePlayerStatus = (status: PlayerStatus) => {

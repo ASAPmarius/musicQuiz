@@ -29,8 +29,13 @@ const {
   isConnected, 
   updatePlayerStatus, 
   sendGameAction,
-  socket  // Add this to access socket directly
-} = useSocket(gameCode)
+  socket  
+} = useSocket(
+  gameCode,
+  session?.user?.id && currentPlayer?.displayName 
+    ? { userId: session.user.id, displayName: currentPlayer.displayName }
+    : undefined
+)
 
 useEffect(() => {
   if (!socket) return

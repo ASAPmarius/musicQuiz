@@ -45,7 +45,12 @@ export default function SongLoading({ params }: SongLoadingProps) {
   const lastFetchTime = useRef<number>(0)
   const fetchTimeout = useRef<NodeJS.Timeout | null>(null)
 
-  const { isConnected, updatePlayerStatus, socket } = useSocket(gameCode)
+  const { isConnected, updatePlayerStatus, socket } = useSocket(
+    gameCode,
+    session?.user?.id && currentPlayer?.displayName 
+      ? { userId: session.user.id, displayName: currentPlayer.displayName }
+      : undefined
+  )
 
   // 🆕 EARLY RETURN FOR AUTH ISSUES
   if (needsReauth) {
