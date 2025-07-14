@@ -26,7 +26,6 @@ model User {
   hostedGames   Game[]    @relation("GameHost")
   gameScores    Score[]
   responses     Response[]
-
   gamePlayer    GamePlayer[]
   
   createdAt     DateTime  @default(now())
@@ -50,7 +49,6 @@ model Account {
   id_token          String? @db.Text
   session_state     String?
 
-  // 🆕 Add these two lines:
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -81,26 +79,26 @@ model VerificationToken {
 
 // Game model - represents a quiz session
 model Game {
-  id          String     @id @default(cuid())
-  code        String     @unique
-  hostId      String
-  status      GameStatus @default(WAITING)
-  maxPlayers  Int        @default(8)
+  id           String     @id @default(cuid())
+  code         String     @unique
+  hostId       String
+  status       GameStatus @default(WAITING)
+  maxPlayers   Int        @default(8)
   targetScore  Int        @default(30)
   
-  settings    Json       @default("{}")
-  currentRound Int       @default(0)
-  songCache    Json      @default("[]")
+  settings     Json       @default("{}")
+  currentRound Int        @default(0)
   
-  players     GamePlayer[]
+  // Relationships
+  players      GamePlayer[]
+  host         User       @relation("GameHost", fields: [hostId], references: [id])
+  rounds       Round[]
+  scores       Score[]
+  gameSongs    GameSong[]
+  playerSongs  PlayerSong[]
   
-  host        User       @relation("GameHost", fields: [hostId], references: [id])
-  rounds      Round[]
-  scores      Score[]
-  gameSongs   GameSongs[]
-  
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   @@map("games")
 }
@@ -115,7 +113,7 @@ model GamePlayer {
   spotifyDeviceId     String?
   deviceName          String   @default("No device selected")
   
-  // Player status - these are the critical fields we're separating!
+  // Player status
   isReady             Boolean  @default(false)
   isHost              Boolean  @default(false)
   songsLoaded         Boolean  @default(false)
@@ -136,6 +134,58 @@ model GamePlayer {
   @@map("game_players")
 }
 
+// Song model - efficient storage of song data
+model Song {
+  id           String   @id @default(cuid())
+  spotifyId    String   @unique
+  name         String
+  artistName   String
+  albumName    String
+  coverUrl     String?
+  createdAt    DateTime @default(now())
+  
+  // Relationships
+  gameSongs    GameSong[]
+  playerSongs  PlayerSong[]
+  
+  @@map("songs")
+}
+
+// Junction table: Game <-> Song relationship
+model GameSong {
+  id        String   @id @default(cuid())
+  gameId    String
+  songId    String
+  addedAt   DateTime @default(now())
+  
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  song      Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  
+  @@unique([gameId, songId])
+  @@map("game_songs")
+}
+
+// Junction table: Player <-> Song relationship with source info
+model PlayerSong {
+  id         String   @id @default(cuid())
+  gameId     String
+  playerId   String
+  songId     String
+  
+  // Source information
+  sourceType String   // 'playlist', 'liked', 'album'
+  sourceName String   // 'Liked Songs', 'My Chill Playlist', etc.
+  sourceId   String?  // Spotify playlist/album ID (null for liked songs)
+  
+  addedAt    DateTime @default(now())
+  
+  game       Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  song       Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  
+  @@unique([gameId, playerId, songId])
+  @@map("player_songs")
+}
+
 // Round model - represents one question in a game
 model Round {
   id              String   @id @default(cuid())
@@ -146,7 +196,6 @@ model Round {
   trackId         String   // Spotify track ID
   trackName       String   // Song title
   artistName      String   // Artist name
-  previewUrl      String?  // 30-second preview URL
   
   // Quiz data
   correctPlaylist String   // Name of the correct playlist
@@ -211,19 +260,4 @@ enum GameStatus {
   PLAYING    // Game in progress
   FINISHED   // Game completed
   CANCELLED  // Game was cancelled
-}
-
-// Add this after your existing Game model
-model GameSongs {
-  id        String   @id @default(cuid())
-  gameId    String
-  playerId  String
-  songs     Json     // Songs for this specific player
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  
-  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  
-  @@unique([gameId, playerId])
-  @@map("game_songs")
 }

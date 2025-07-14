@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
-import { LobbyPlayer, GameData } from '@/lib/types/game'
+import { LobbyPlayer, GameData, Song } from '@/lib/types/game'
 import { prisma } from '@/lib/prisma'
 
 interface RouteParams {
@@ -18,13 +18,31 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     
     console.log('🔍 Fetching game details for:', gameCode)
 
-    // Find game with all players
+    // Find game with all players AND songs using JOINs (normalized approach)
     const game = await prisma.game.findUnique({
       where: { code: gameCode },
       include: {
         host: true,
         players: {
           orderBy: { joinedAt: 'asc' }
+        },
+        // 🆕 NEW: Include normalized song data via JOINs
+        gameSongs: {
+          include: {
+            song: {
+              include: {
+                playerSongs: {
+                  where: { gameId: undefined }, // Will be set below
+                  select: {
+                    playerId: true,
+                    sourceType: true,
+                    sourceName: true,
+                    sourceId: true,
+                  }
+                }
+              }
+            }
+          }
         }
       }
     })
@@ -34,7 +52,60 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Format players as LobbyPlayer objects
+    // 🆕 NEW: Transform normalized song data back to original format
+    const songCache: Song[] = game.gameSongs.map(gs => {
+      // Get player song info for this specific game
+      const playerSongsForThisGame = gs.song.playerSongs.length > 0 
+        ? gs.song.playerSongs 
+        : []
+
+      // If playerSongs is empty, we need to fetch it separately
+      // This is a limitation of Prisma's include - we'll fix it below
+      
+      return {
+        id: gs.song.spotifyId,
+        name: gs.song.name,
+        artists: gs.song.artistName,
+        album: gs.song.albumName,
+        coverUrl: gs.song.coverUrl || undefined,
+        owners: [] // Will be populated below
+      }
+    })
+
+    // 🔧 FIX: Get player song relationships separately (more efficient)
+    if (songCache.length > 0) {
+      const songIds = game.gameSongs.map(gs => gs.song.id)
+      const playerSongs = await prisma.playerSong.findMany({
+        where: {
+          gameId: game.id,
+          songId: { in: songIds }
+        },
+        include: {
+          song: {
+            select: { spotifyId: true }
+          }
+        }
+      })
+
+      // Map player songs back to song cache
+      songCache.forEach(song => {
+        const relatedPlayerSongs = playerSongs.filter(ps => ps.song.spotifyId === song.id)
+        song.owners = relatedPlayerSongs.map(ps => {
+          const player = game.players.find(p => p.userId === ps.playerId)
+          return {
+            playerId: ps.playerId,
+            playerName: player?.displayName || 'Unknown Player',
+            source: {
+              type: ps.sourceType as 'playlist' | 'liked' | 'album',
+              name: ps.sourceName,
+              id: ps.sourceId || undefined
+            }
+          }
+        })
+      })
+    }
+
+    // Format players as LobbyPlayer objects (unchanged)
     const currentPlayers: LobbyPlayer[] = game.players.map(player => ({
       id: player.id,
       userId: player.userId,
@@ -49,7 +120,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       isHost: player.isHost
     }))
 
-    console.log(`✅ Found game ${gameCode} with ${currentPlayers.length} players`)
+    console.log(`✅ Found game ${gameCode} with ${currentPlayers.length} players and ${songCache.length} songs`)
 
     return NextResponse.json({
       game: {
@@ -63,7 +134,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         players: currentPlayers,
         host: game.host,
         settings: game.settings,
-        songCache: game.songCache,
+        songCache: songCache, // 🆕 NEW: Transformed from normalized data
         createdAt: game.createdAt,
         updatedAt: game.updatedAt
       }
@@ -113,157 +184,33 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         }
       },
       data: {
-        // Only update the fields that were provided
-        ...(playerUpdate.isReady !== undefined && { isReady: playerUpdate.isReady }),
-        ...(playerUpdate.songsLoaded !== undefined && { songsLoaded: playerUpdate.songsLoaded }),
-        ...(playerUpdate.loadingProgress !== undefined && { loadingProgress: playerUpdate.loadingProgress }),
-        ...(playerUpdate.spotifyDeviceId !== undefined && { spotifyDeviceId: playerUpdate.spotifyDeviceId }),
-        ...(playerUpdate.deviceName !== undefined && { deviceName: playerUpdate.deviceName }),
-        ...(playerUpdate.playlistsSelected !== undefined && { playlistsSelected: playerUpdate.playlistsSelected }),
-        // Always update the timestamp
+        ...playerUpdate,
         updatedAt: new Date()
       }
     })
 
-    console.log(`✅ Updated player ${updatedPlayer.displayName}:`, {
-      songsLoaded: updatedPlayer.songsLoaded,
-      loadingProgress: updatedPlayer.loadingProgress,
-      isReady: updatedPlayer.isReady
-    })
+    console.log('✅ Player updated successfully:', updatedPlayer.displayName)
 
-    // 🆕 EMIT SOCKET EVENTS for different types of updates
-    try {
-      const io = (global as any).io
-      if (io) {
-        // 🔄 Progress update event
-        if (playerUpdate.loadingProgress !== undefined) {
-          io.to(gameCode).emit('game-updated', {
-            action: 'player-loading-progress',
-            userId: session.user.id,
-            progress: playerUpdate.loadingProgress,
-            message: `Loading ${playerUpdate.loadingProgress}%`,
-            timestamp: new Date().toISOString()
-          })
-          console.log(`📊 Emitted progress update: ${playerUpdate.loadingProgress}%`)
-        }
-
-        // 🎵 Songs loaded event
-        if (playerUpdate.songsLoaded !== undefined) {
-          io.to(gameCode).emit('game-updated', {
-            action: playerUpdate.songsLoaded ? 'player-songs-ready' : 'player-songs-reset',
-            userId: session.user.id,
-            songsLoaded: playerUpdate.songsLoaded,
-            playerName: updatedPlayer.displayName,
-            timestamp: new Date().toISOString()
-          })
-          console.log(`🎵 Emitted songs loaded event: ${playerUpdate.songsLoaded}`)
-        }
-
-        // ✅ Ready status event
-        if (playerUpdate.isReady !== undefined) {
-          io.to(gameCode).emit('game-updated', {
-            action: 'player-ready-changed',
-            userId: session.user.id,
-            isReady: playerUpdate.isReady,
-            playerName: updatedPlayer.displayName,
-            timestamp: new Date().toISOString()
-          })
-          console.log(`✅ Emitted ready status: ${playerUpdate.isReady}`)
-        }
-
-        // 🔧 Device selection event
-        if (playerUpdate.spotifyDeviceId !== undefined || playerUpdate.deviceName !== undefined) {
-          io.to(gameCode).emit('game-updated', {
-            action: 'player-device-changed',
-            userId: session.user.id,
-            deviceName: updatedPlayer.deviceName,
-            playerName: updatedPlayer.displayName,
-            timestamp: new Date().toISOString()
-          })
-          console.log(`🔧 Emitted device change: ${updatedPlayer.deviceName}`)
-        }
-
-        // 📋 Playlist selection event
-        if (playerUpdate.playlistsSelected !== undefined) {
-          io.to(gameCode).emit('game-updated', {
-            action: 'player-playlists-selected',
-            userId: session.user.id,
-            playlistCount: updatedPlayer.playlistsSelected.length,
-            playerName: updatedPlayer.displayName,
-            timestamp: new Date().toISOString()
-          })
-          console.log(`📋 Emitted playlist selection: ${updatedPlayer.playlistsSelected.length} playlists`)
-        }
-      } else {
-        console.warn('⚠️ Socket.io not available for real-time updates')
-      }
-    } catch (socketError) {
-      console.error('❌ Error emitting socket events:', socketError)
-      // Don't fail the request just because socket failed
+    // Emit socket event to all players in the game
+    const io = (global as any).io
+    if (io) {
+      io.to(gameCode).emit('game-updated', {
+        action: 'player-updated',
+        playerId: session.user.id,
+        playerUpdate,
+        timestamp: new Date().toISOString()
+      })
     }
 
-    // Fetch updated players list for response
-    const allPlayers = await prisma.gamePlayer.findMany({
-      where: { gameId: game.id },
-      orderBy: { joinedAt: 'asc' }
-    })
-
-    const formattedPlayers: LobbyPlayer[] = allPlayers.map(player => ({
-      id: player.id,
-      userId: player.userId,
-      displayName: player.displayName,
-      spotifyDeviceId: player.spotifyDeviceId,
-      deviceName: player.deviceName,
-      playlistsSelected: player.playlistsSelected,
-      songsLoaded: player.songsLoaded,
-      loadingProgress: player.loadingProgress,
-      joinedAt: player.joinedAt.toISOString(),
-      isReady: player.isReady,
-      isHost: player.isHost
-    }))
-
-    const updatedPlayerFormatted: LobbyPlayer = {
-      id: updatedPlayer.id,
-      userId: updatedPlayer.userId,
-      displayName: updatedPlayer.displayName,
-      spotifyDeviceId: updatedPlayer.spotifyDeviceId,
-      deviceName: updatedPlayer.deviceName,
-      playlistsSelected: updatedPlayer.playlistsSelected,
-      songsLoaded: updatedPlayer.songsLoaded,
-      loadingProgress: updatedPlayer.loadingProgress,
-      joinedAt: updatedPlayer.joinedAt.toISOString(),
-      isReady: updatedPlayer.isReady,
-      isHost: updatedPlayer.isHost
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: 'Player status updated atomically!',
-      player: updatedPlayerFormatted,
-      players: formattedPlayers
+    return NextResponse.json({ 
+      success: true, 
+      player: updatedPlayer 
     })
 
   } catch (error) {
-    console.error('❌ Error updating player:', error)
-    
-    // More specific error handling
-    if (error instanceof Error) {
-      if (error.message.includes('Record to update not found')) {
-        return NextResponse.json(
-          { error: 'Player not found in this game' }, 
-          { status: 404 }
-        )
-      }
-      if (error.message.includes('Unique constraint')) {
-        return NextResponse.json(
-          { error: 'Duplicate player entry' }, 
-          { status: 409 }
-        )
-      }
-    }
-    
+    console.error('Error updating player:', error)
     return NextResponse.json(
-      { error: 'Failed to update player status', details: error instanceof Error ? error.message : 'Unknown error' }, 
+      { error: 'Failed to update player' }, 
       { status: 500 }
     )
   }
@@ -299,6 +246,37 @@ export async function DELETE(request: NextRequest, { params }: RouteParams) {
         }
       }
     })
+
+    // 🆕 NEW: Also clean up related song data when player leaves
+    await prisma.playerSong.deleteMany({
+      where: {
+        gameId: game.id,
+        playerId: session.user.id
+      }
+    })
+
+    // Clean up GameSong entries that have no remaining PlayerSong entries
+    const orphanedGameSongs = await prisma.gameSong.findMany({
+      where: {
+        gameId: game.id,
+        song: {
+          playerSongs: {
+            none: {
+              gameId: game.id
+            }
+          }
+        }
+      }
+    })
+
+    if (orphanedGameSongs.length > 0) {
+      await prisma.gameSong.deleteMany({
+        where: {
+          id: { in: orphanedGameSongs.map(gs => gs.id) }
+        }
+      })
+      console.log(`🧹 Cleaned up ${orphanedGameSongs.length} orphaned songs`)
+    }
 
     // Emit socket event
     try {

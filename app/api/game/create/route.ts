@@ -59,8 +59,7 @@ export async function POST(request: NextRequest) {
             targetScore,
             createdAt: new Date().toISOString()
           },
-          currentRound: 0,
-          songCache: []
+          currentRound: 0
         },
         include: {
           host: {
@@ -118,8 +117,10 @@ export async function POST(request: NextRequest) {
         maxPlayers: result.game.maxPlayers,
         targetScore: result.game.targetScore,
         currentPlayers: 1,
-        players: [hostPlayerFormatted], // Array with just the host
+        players: [hostPlayerFormatted], 
         host: result.game.host,
+        songCache: [],
+        settings: result.game.settings,
         createdAt: result.game.createdAt
       }
     })

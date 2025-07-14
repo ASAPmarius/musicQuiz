@@ -27,7 +27,7 @@ export interface GameData {
     targetScore: number
     createdAt: string
   }
-  songCache: Song[]
+  songCache: Song[]  // This will be populated from joins, not stored as JSONB
   host: {
     id: string
     name: string
@@ -52,10 +52,11 @@ export interface Player {
 }
 
 export interface Song {
-  id: string
+  id: string           // Spotify ID
   name: string
-  artists: string
-  album: string
+  artists: string      // Artist name (simplified from array)
+  album: string        // Album name
+  coverUrl?: string    // Cover image URL
   owners: OwnerInfo[]
 }
 
