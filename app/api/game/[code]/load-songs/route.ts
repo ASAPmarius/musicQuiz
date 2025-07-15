@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
-import { makeSpotifyRequest } from '@/lib/spotify-api-wrapper'
+import { SpotifyCacheWrapper } from '@/lib/spotify-cache-wrapper'
 
 export async function POST(
   request: NextRequest,
@@ -18,7 +18,7 @@ export async function POST(
     const gameCode = resolvedParams.code.toUpperCase()
     const { selectedPlaylistIds } = await request.json()
 
-    console.log(`🎵 Loading songs for game ${gameCode}, user ${session.user.id}`)
+    console.log(`🎵 Loading songs for game ${gameCode}, user ${session.user.id} (with caching)`)
 
     // Find game and current player
     const game = await prisma.game.findUnique({
@@ -111,7 +111,7 @@ export async function POST(
       )
     }
 
-    // 🆕 NEW: Normalized saveSongsBatch function
+    // Normalized saveSongsBatch function
     const saveSongsBatch = async (songsToSave: any[]) => {
       try {
         if (songsToSave.length === 0) return
@@ -198,22 +198,10 @@ export async function POST(
 
     // Load playlists
     await updateProgress(10, 'Loading your playlists...')
-    const playlistsResponse = await makeSpotifyRequest(
-      'https://api.spotify.com/v1/me/playlists?limit=50',
-      accessToken,
-      session.user.id
-    )
-
-    let nextUrl = playlistsResponse.next
-    const allPlaylistItems = [...(playlistsResponse.items || [])]
-
-    while (nextUrl) {
-      const nextBatch = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
-      allPlaylistItems.push(...(nextBatch.items || []))
-      nextUrl = nextBatch.next
-    }
-
-    const allPlaylists = allPlaylistItems
+    
+    console.log(`📋 Fetching playlists for user ${session.user.id} (cached)`)
+    const allPlaylists = await SpotifyCacheWrapper.getUserPlaylists(session.user.id, accessToken)
+    
     await updateProgress(15, 'Playlists loaded successfully')
 
     // Process selected playlists
@@ -234,25 +222,14 @@ export async function POST(
           `Loading "${playlist.name}" (${i + 1}/${selectedPlaylistIds.length})`
         )
 
-        const tracksData = await makeSpotifyRequest(
-          `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`,
-          accessToken,
-          session.user.id
-        )
-
-        let nextTracksUrl = tracksData.next
-        const allTracks = [...(tracksData.items || [])]
-
-        while (nextTracksUrl) {
-          const nextTracksBatch = await makeSpotifyRequest(nextTracksUrl, accessToken, session.user.id)
-          allTracks.push(...(nextTracksBatch.items || []))
-          nextTracksUrl = nextTracksBatch.next
-        }
-
-        const tracks = allTracks.map((item: any) => item.track).filter(Boolean)
+        console.log(`🎵 Processing playlist "${playlist.name}" (cached)`)
+        
+        // USE CACHED VERSION
+        const cachedTracks = await SpotifyCacheWrapper.getPlaylistTracks(playlistId, accessToken)
+        
         const batchSongs: any[] = []
 
-        tracks.forEach((track: any) => {
+        cachedTracks.forEach((track: any) => {
           if (track && track.id && !seenSongIds.has(track.id)) {
             seenSongIds.add(track.id)
             const songData = {
@@ -279,7 +256,6 @@ export async function POST(
         if (batchSongs.length > 0) {
           await saveSongsBatch(batchSongs)
           breakdown.playlists += batchSongs.length
-          console.log(`💾 Saved ${batchSongs.length} songs from "${playlist.name}"`)
         }
 
         await updateSmartProgress(songs.length, `"${playlist.name}"`, 'playlists')
@@ -294,21 +270,12 @@ export async function POST(
 
     try {
       const batchSongs: any[] = []
-      let allLikedSongs: any[] = []
-      let nextUrl: string | null = 'https://api.spotify.com/v1/me/tracks?limit=50'
       
-      while (nextUrl) {
-        const likedResponse = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
-        
-        if (likedResponse.items) {
-          const tracks = likedResponse.items.map((item: any) => item.track).filter(Boolean)
-          allLikedSongs = allLikedSongs.concat(tracks)
-        }
-        
-        nextUrl = likedResponse.next
-      }
+      console.log(`❤️ Fetching liked songs for user ${session.user.id} (cached)`)
+      // USE CACHED VERSION  
+      const cachedLikedSongs = await SpotifyCacheWrapper.getUserLikedSongs(session.user.id, accessToken)
 
-      allLikedSongs.forEach((track: any) => {
+      cachedLikedSongs.forEach((track: any) => {
         if (track && track.id && !seenSongIds.has(track.id)) {
           seenSongIds.add(track.id)
           const songData = {
@@ -330,8 +297,7 @@ export async function POST(
       
       if (batchSongs.length > 0) {
         await saveSongsBatch(batchSongs)
-        breakdown.likedSongs = batchSongs.length
-        console.log(`💾 Saved ${batchSongs.length} liked songs`)
+        breakdown.likedSongs += batchSongs.length
       }
       
       await updateSmartProgress(songs.length, 'Liked Songs', 'liked')
@@ -344,34 +310,27 @@ export async function POST(
     await updateProgress(70, 'Loading your saved albums...')
 
     try {
-      let allSavedAlbums: any[] = []
-      let nextUrl: string | null = 'https://api.spotify.com/v1/me/albums?limit=50'
-      
-      while (nextUrl) {
-        const albumsResponse = await makeSpotifyRequest(nextUrl, accessToken, session.user.id)
-        
-        if (albumsResponse.items) {
-          const albums = albumsResponse.items.map((item: any) => item.album).filter(Boolean)
-          allSavedAlbums = allSavedAlbums.concat(albums)
-        }
-        
-        nextUrl = albumsResponse.next
-      }
+      console.log(`💽 Fetching saved albums for user ${session.user.id} (cached)`)
+      // USE CACHED VERSION
+      const allSavedAlbums = await SpotifyCacheWrapper.getUserSavedAlbums(session.user.id, accessToken)
 
       for (let i = 0; i < allSavedAlbums.length; i++) {
         const album = allSavedAlbums[i]
         
         try {
-          const albumTracksResponse = await makeSpotifyRequest(
-            `https://api.spotify.com/v1/albums/${album.id}/tracks?limit=50`,
-            accessToken,
-            session.user.id
+          await updateProgress(
+            Math.round(70 + (i / allSavedAlbums.length) * 25), 
+            `Loading "${album.name}" (${i + 1}/${allSavedAlbums.length})`
           )
 
-          const tracks = albumTracksResponse.items || []
+          console.log(`💽 Processing album "${album.name}" (cached)`)
+          
+          // USE CACHED VERSION
+          const cachedAlbumTracks = await SpotifyCacheWrapper.getAlbumTracks(album.id, accessToken)
+          
           const batchSongs: any[] = []
 
-          tracks.forEach((track: any) => {
+          cachedAlbumTracks.forEach((track: any) => {
             if (track && track.id && !seenSongIds.has(track.id)) {
               seenSongIds.add(track.id)
               const songData = {
