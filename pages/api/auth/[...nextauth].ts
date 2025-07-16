@@ -31,7 +31,7 @@ async function refreshAccessToken(token: JWT): Promise<JWT> {
     const refreshedTokens = await response.json()
 
     if (!response.ok) {
-      console.error('❌ Token refresh failed:', refreshedTokens)
+      console.error('❌ Token refresh failed - HTTP status:', response.status)
       throw refreshedTokens
     }
 
@@ -44,7 +44,7 @@ async function refreshAccessToken(token: JWT): Promise<JWT> {
       refreshToken: refreshedTokens.refresh_token ?? token.refreshToken, // Use new refresh token if provided
     }
   } catch (error) {
-    console.error('❌ Error refreshing access token:', error)
+    console.error('❌ Error refreshing access token:', error instanceof Error ? error.message : 'Unknown error')
     
     return {
       ...token,
@@ -148,7 +148,7 @@ export const authOptions: NextAuthOptions = {
             }
           }
         } catch (error) {
-          console.error('❌ Error updating account:', error)
+          console.error('❌ Error updating account:', error instanceof Error ? error.message : 'Unknown error')
         }
       }
       return true

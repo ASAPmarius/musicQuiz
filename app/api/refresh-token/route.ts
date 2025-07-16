@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error('Token refresh failed:', errorText)
+      console.error('Token refresh failed - HTTP status:', response.status)
       return NextResponse.json({ 
         error: 'Token refresh failed', 
         details: errorText,
@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
     })
 
   } catch (error) {
-    console.error('Manual token refresh error:', error)
+    console.error('Manual token refresh error:', error instanceof Error ? error.message : 'Unknown error')
     return NextResponse.json({
       error: 'Token refresh failed',
       details: error instanceof Error ? error.message : 'Unknown error'
