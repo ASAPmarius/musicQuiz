@@ -58,11 +58,69 @@ CREATE TABLE "games" (
     "hostId" TEXT NOT NULL,
     "status" "GameStatus" NOT NULL DEFAULT 'WAITING',
     "maxPlayers" INTEGER NOT NULL DEFAULT 8,
-    "targetScore" INTEGER NOT NULL DEFAULT 10,
+    "targetScore" INTEGER NOT NULL DEFAULT 30,
+    "settings" JSONB NOT NULL DEFAULT '{}',
+    "currentRound" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "games_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "game_players" (
+    "id" TEXT NOT NULL,
+    "gameId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "displayName" TEXT NOT NULL,
+    "spotifyDeviceId" TEXT,
+    "deviceName" TEXT NOT NULL DEFAULT 'No device selected',
+    "isReady" BOOLEAN NOT NULL DEFAULT false,
+    "isHost" BOOLEAN NOT NULL DEFAULT false,
+    "songsLoaded" BOOLEAN NOT NULL DEFAULT false,
+    "loadingProgress" INTEGER NOT NULL DEFAULT 0,
+    "playlistsSelected" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "game_players_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "songs" (
+    "id" TEXT NOT NULL,
+    "spotifyId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "artistName" TEXT NOT NULL,
+    "albumName" TEXT NOT NULL,
+    "coverUrl" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "songs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "game_songs" (
+    "id" TEXT NOT NULL,
+    "gameId" TEXT NOT NULL,
+    "songId" TEXT NOT NULL,
+    "addedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "game_songs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "player_songs" (
+    "id" TEXT NOT NULL,
+    "gameId" TEXT NOT NULL,
+    "playerId" TEXT NOT NULL,
+    "songId" TEXT NOT NULL,
+    "sourceType" TEXT NOT NULL,
+    "sourceName" TEXT NOT NULL,
+    "sourceId" TEXT,
+    "addedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "player_songs_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -73,7 +131,6 @@ CREATE TABLE "rounds" (
     "trackId" TEXT NOT NULL,
     "trackName" TEXT NOT NULL,
     "artistName" TEXT NOT NULL,
-    "previewUrl" TEXT,
     "correctPlaylist" TEXT NOT NULL,
     "options" TEXT[],
     "startedAt" TIMESTAMP(3),
@@ -129,6 +186,18 @@ CREATE UNIQUE INDEX "verification_tokens_identifier_token_key" ON "verification_
 CREATE UNIQUE INDEX "games_code_key" ON "games"("code");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "game_players_gameId_userId_key" ON "game_players"("gameId", "userId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "songs_spotifyId_key" ON "songs"("spotifyId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "game_songs_gameId_songId_key" ON "game_songs"("gameId", "songId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "player_songs_gameId_playerId_songId_key" ON "player_songs"("gameId", "playerId", "songId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "rounds_gameId_roundNumber_key" ON "rounds"("gameId", "roundNumber");
 
 -- CreateIndex
@@ -145,6 +214,24 @@ ALTER TABLE "sessions" ADD CONSTRAINT "sessions_userId_fkey" FOREIGN KEY ("userI
 
 -- AddForeignKey
 ALTER TABLE "games" ADD CONSTRAINT "games_hostId_fkey" FOREIGN KEY ("hostId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "game_players" ADD CONSTRAINT "game_players_gameId_fkey" FOREIGN KEY ("gameId") REFERENCES "games"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "game_players" ADD CONSTRAINT "game_players_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "game_songs" ADD CONSTRAINT "game_songs_gameId_fkey" FOREIGN KEY ("gameId") REFERENCES "games"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "game_songs" ADD CONSTRAINT "game_songs_songId_fkey" FOREIGN KEY ("songId") REFERENCES "songs"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "player_songs" ADD CONSTRAINT "player_songs_gameId_fkey" FOREIGN KEY ("gameId") REFERENCES "games"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "player_songs" ADD CONSTRAINT "player_songs_songId_fkey" FOREIGN KEY ("songId") REFERENCES "songs"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "rounds" ADD CONSTRAINT "rounds_gameId_fkey" FOREIGN KEY ("gameId") REFERENCES "games"("id") ON DELETE CASCADE ON UPDATE CASCADE;
