@@ -3,6 +3,95 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
+async function cleanupOrphanedSongs(prisma: PrismaClient): Promise<number> {
+  console.log('🎵 Starting orphaned song cleanup...')
+  
+  // Find songs that are not referenced by any active games
+  const orphanedSongs = await prisma.song.findMany({
+    where: {
+      // Songs that have no GameSong entries (not in any active game)
+      gameSongs: {
+        none: {}
+      },
+      // AND no PlayerSong entries (not owned by any active player)
+      playerSongs: {
+        none: {}
+      }
+    },
+    select: {
+      id: true,
+      name: true,
+      artistName: true,
+      createdAt: true
+    }
+  })
+  
+  if (orphanedSongs.length === 0) {
+    console.log('✅ No orphaned songs to clean up')
+    return 0
+  }
+  
+  console.log(`🗑️ Found ${orphanedSongs.length} orphaned songs to delete`)
+  
+  // Delete the orphaned songs
+  const deleteResult = await prisma.song.deleteMany({
+    where: {
+      id: { in: orphanedSongs.map(s => s.id) }
+    }
+  })
+  
+  console.log(`🎵 Deleted ${deleteResult.count} orphaned songs`)
+  return deleteResult.count
+}
+
+async function cleanupOldSongs(prisma: PrismaClient): Promise<number> {
+  console.log('🎵 Starting old song cleanup...')
+  
+  // Calculate cutoff time (24 hours ago)
+  const twentyFourHoursAgo = new Date()
+  twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24)
+  
+  // Find songs that are old AND not in any active games
+  const oldSongs = await prisma.song.findMany({
+    where: {
+      createdAt: {
+        lt: twentyFourHoursAgo
+      },
+      // Only delete if not in any active games
+      gameSongs: {
+        none: {
+          game: {
+            status: { in: ['WAITING', 'PLAYING'] }
+          }
+        }
+      }
+    },
+    select: {
+      id: true,
+      name: true,
+      artistName: true,
+      createdAt: true
+    }
+  })
+  
+  if (oldSongs.length === 0) {
+    console.log('✅ No old songs to clean up')
+    return 0
+  }
+  
+  console.log(`🗑️ Found ${oldSongs.length} old songs to delete`)
+  
+  // Delete old songs and their relationships
+  const deleteResult = await prisma.song.deleteMany({
+    where: {
+      id: { in: oldSongs.map(s => s.id) }
+    }
+  })
+  
+  console.log(`🎵 Deleted ${deleteResult.count} old songs`)
+  return deleteResult.count
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Simple authentication check - you can enhance this
@@ -66,15 +155,19 @@ export async function POST(request: NextRequest) {
 
     console.log(`✅ Cleanup completed! Deleted ${deleteResult.count} games`)
 
-    // Calculate total related records that were deleted (for reporting)
+    const orphanedSongsDeleted = await cleanupOrphanedSongs(prisma)
+    const oldSongsDeleted = await cleanupOldSongs(prisma)
+
+    // Update the final response to include song cleanup stats
     const totalRelatedRecords = gamesToDelete.reduce((total, game) => {
       return total + game._count.players + game._count.rounds + game._count.scores + game._count.gameSongs
     }, 0)
 
     return NextResponse.json({
       success: true,
-      message: `Successfully cleaned up old games`,
-      deleted: deleteResult.count,
+      message: `Successfully cleaned up old data`,
+      gamesDeleted: deleteResult.count,
+      songsDeleted: orphanedSongsDeleted + oldSongsDeleted,
       totalRelatedRecordsDeleted: totalRelatedRecords,
       cutoffTime: fourHoursAgo.toISOString(),
       deletedGames: gamesToDelete.map(game => ({
