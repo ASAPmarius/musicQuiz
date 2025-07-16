@@ -21,8 +21,30 @@ export default function CreateGame() {
       return
     }
 
+    // Client-side validation (matches server validation)
     if (!displayName.trim()) {
       setError('Please enter a display name')
+      return
+    }
+
+    if (displayName.length > 20) {
+      setError('Display name must be 20 characters or less')
+      return
+    }
+
+    // Check for invalid characters
+    if (!/^[a-zA-Z0-9\s\-_]+$/.test(displayName)) {
+      setError('Display name can only contain letters, numbers, spaces, hyphens, and underscores')
+      return
+    }
+
+    if (maxPlayers < 2 || maxPlayers > 8) {
+      setError('Number of players must be between 2 and 8')
+      return
+    }
+
+    if (targetScore < 10 || targetScore > 100) {
+      setError('Target score must be between 10 and 100')
       return
     }
 
@@ -37,22 +59,33 @@ export default function CreateGame() {
         },
         body: JSON.stringify({
           displayName: displayName.trim(),
-          maxPlayers,
-          targetScore
+          maxPlayers: Number(maxPlayers),
+          targetScore: Number(targetScore)
         })
       })
 
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to create game')
+        // Handle specific validation errors
+        if (response.status === 429) {
+          setError('Too many requests. Please wait a moment and try again.')
+        } else if (data.details && data.details.length > 0) {
+          // Show detailed validation errors
+          const detailedErrors = data.details.map((detail: any) => detail.message).join(', ')
+          setError(detailedErrors)
+        } else {
+          setError(data.error || 'Failed to create game')
+        }
+        return
       }
 
-      // Redirect to game lobby
+      // Success - redirect to game lobby
       router.push(`/game/${data.game.code}`)
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create game')
+      console.error('Create game error:', err)
+      setError('Network error. Please check your connection and try again.')
     } finally {
       setLoading(false)
     }

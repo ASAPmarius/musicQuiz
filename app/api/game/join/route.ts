@@ -3,29 +3,33 @@ import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
 import { Server } from 'socket.io'
+import { 
+  validateRequest, 
+  handleValidationError, 
+  createSafeResponse, 
+  getUserIdForRateLimit 
+} from '@/lib/validation/middleware'
+import { GameJoinSchema } from '@/lib/validation/schemas'
 
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication
+    // Check authentication first
     const session = await getServerSession(authOptions)
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const { gameCode, displayName } = await request.json()
+    // Validate and sanitize request data
+    const validatedData = await validateRequest(request, GameJoinSchema, {
+      userId: getUserIdForRateLimit(session.user.id),
+      rateLimit: 'gameJoin'
+    })
 
-    if (!gameCode || !displayName?.trim()) {
-      return NextResponse.json(
-        { error: 'Game code and display name are required' }, 
-        { status: 400 }
-      )
-    }
-
-    const upperGameCode = gameCode.toUpperCase()
+    const { gameCode, displayName } = validatedData
 
     // Find the game with existing players
     const game = await prisma.game.findUnique({
-      where: { code: upperGameCode },
+      where: { code: gameCode },
       include: {
         host: {
           select: {
@@ -34,7 +38,7 @@ export async function POST(request: NextRequest) {
             image: true
           }
         },
-        players: true  // Get existing players from GamePlayer table
+        players: true
       }
     })
 
@@ -63,79 +67,71 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // Check if display name is already taken
+    // Check if display name is already taken (case-insensitive)
     const nameExists = game.players.some(p => 
-      p.displayName.toLowerCase() === displayName.trim().toLowerCase()
+      p.displayName.toLowerCase() === displayName.toLowerCase()
     )
     if (nameExists) {
       return NextResponse.json({ 
-        error: 'Display name is already taken. Please choose a different name.' 
+        error: 'Display name is already taken. Please choose a different name.',
+        suggestions: [`${displayName}2`, `${displayName}_`, `${displayName}1`]
       }, { status: 400 })
     }
 
-    // 🎯 ADD PLAYER TO GAME - Uses GamePlayer table directly
-    const result = await prisma.$transaction(async (tx) => {
-      // Create new player record
-      const newPlayer = await tx.gamePlayer.create({
-        data: {
-          gameId: game.id,
-          userId: session.user.id,
-          displayName: displayName.trim(),
-          spotifyDeviceId: null,
-          deviceName: 'No device selected',
-          playlistsSelected: [],
-          songsLoaded: false,
-          loadingProgress: 0,
-          isReady: false,
-          isHost: false,
-          joinedAt: new Date(),
-          updatedAt: new Date()
-        }
-      })
-
-      // Get all players including the new one
-      const allPlayers = await tx.gamePlayer.findMany({
-        where: { gameId: game.id },
-        orderBy: { joinedAt: 'asc' }
-      })
-
-      return { newPlayer, allPlayers }
+    // Create new player
+    const newPlayer = await prisma.gamePlayer.create({
+      data: {
+        gameId: game.id,
+        userId: session.user.id,
+        displayName: displayName,
+        spotifyDeviceId: null,
+        deviceName: 'No device selected',
+        playlistsSelected: [],
+        songsLoaded: false,
+        loadingProgress: 0,
+        isReady: false,
+        isHost: false,
+        joinedAt: new Date(),
+        updatedAt: new Date()
+      }
     })
 
-    // Format players for response
-    const formattedPlayers = result.allPlayers.map(player => ({
-      id: player.id,
-      userId: player.userId,
-      displayName: player.displayName,
-      spotifyDeviceId: player.spotifyDeviceId,
-      deviceName: player.deviceName,
-      playlistsSelected: player.playlistsSelected,
-      songsLoaded: player.songsLoaded,
-      loadingProgress: player.loadingProgress,
-      joinedAt: player.joinedAt.toISOString(),
-      isReady: player.isReady,
-      isHost: player.isHost
-    }))
-
+    // Format player data for response
     const newPlayerFormatted = {
-      id: result.newPlayer.id,
-      userId: result.newPlayer.userId,
-      displayName: result.newPlayer.displayName,
-      spotifyDeviceId: result.newPlayer.spotifyDeviceId,
-      deviceName: result.newPlayer.deviceName,
-      playlistsSelected: result.newPlayer.playlistsSelected,
-      songsLoaded: result.newPlayer.songsLoaded,
-      loadingProgress: result.newPlayer.loadingProgress,
-      joinedAt: result.newPlayer.joinedAt.toISOString(),
-      isReady: result.newPlayer.isReady,
-      isHost: result.newPlayer.isHost
+      id: newPlayer.id,
+      userId: newPlayer.userId,
+      displayName: newPlayer.displayName,
+      spotifyDeviceId: newPlayer.spotifyDeviceId,
+      deviceName: newPlayer.deviceName,
+      playlistsSelected: newPlayer.playlistsSelected,
+      songsLoaded: newPlayer.songsLoaded,
+      loadingProgress: newPlayer.loadingProgress,
+      joinedAt: newPlayer.joinedAt.toISOString(),
+      isReady: newPlayer.isReady,
+      isHost: newPlayer.isHost
     }
 
+    // Format all players for response
+    const allPlayers = [...game.players, newPlayer]
+    const formattedPlayers = allPlayers.map(p => ({
+      id: p.id,
+      userId: p.userId,
+      displayName: p.displayName,
+      spotifyDeviceId: p.spotifyDeviceId,
+      deviceName: p.deviceName,
+      playlistsSelected: p.playlistsSelected,
+      songsLoaded: p.songsLoaded,
+      loadingProgress: p.loadingProgress,
+      joinedAt: p.joinedAt.toISOString(),
+      isReady: p.isReady,
+      isHost: p.isHost
+    }))
+
+    // Emit socket event to notify other players
     try {
-      // Emit socket event for real-time updates
       const io = (global as any).io as Server
       if (io) {
-        io.to(upperGameCode).emit('game-updated', {
+        io.to(gameCode).emit('game-updated', {
           action: 'player-joined',
           playerData: newPlayerFormatted,
           timestamp: new Date().toISOString()
@@ -146,9 +142,10 @@ export async function POST(request: NextRequest) {
       console.warn('Failed to emit socket event:', error)
     }
 
-    return NextResponse.json({
+    // Return sanitized response
+    return createSafeResponse({
       success: true,
-      message: `Successfully joined game ${upperGameCode}`,
+      message: `Successfully joined game ${gameCode}`,
       game: {
         id: game.id,
         code: game.code,
@@ -158,15 +155,13 @@ export async function POST(request: NextRequest) {
         currentPlayers: formattedPlayers.length,
         players: formattedPlayers,
         host: game.host,
-        createdAt: game.createdAt
+        createdAt: game.createdAt,
+        updatedAt: game.updatedAt
       }
     })
 
   } catch (error) {
     console.error('Error joining game:', error)
-    return NextResponse.json(
-      { error: 'Failed to join game' }, 
-      { status: 500 }
-    )
+    return handleValidationError(error)
   }
 }

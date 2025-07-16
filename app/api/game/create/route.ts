@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { prisma } from '@/lib/prisma'
+import { 
+  validateRequest, 
+  handleValidationError, 
+  createSafeResponse, 
+  getUserIdForRateLimit 
+} from '@/lib/validation/middleware'
+import { GameCreationSchema } from '@/lib/validation/schemas'
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,7 +18,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    const { maxPlayers = 8, targetScore = 30 } = await request.json()
+    // Validate and sanitize request data
+    const validatedData = await validateRequest(request, GameCreationSchema, {
+      userId: getUserIdForRateLimit(session.user.id),
+      rateLimit: 'gameCreate'
+    })
+
+    const { displayName, maxPlayers, targetScore } = validatedData
 
     // Generate a unique room code
     const generateRoomCode = (): string => {
@@ -39,12 +52,12 @@ export async function POST(request: NextRequest) {
 
     if (attempts >= maxAttempts) {
       return NextResponse.json(
-        { error: 'Failed to generate unique room code' }, 
+        { error: 'Failed to generate unique room code. Please try again.' }, 
         { status: 500 }
       )
     }
 
-    // 🎯 CREATE GAME AND HOST PLAYER IN TRANSACTION
+    // Create game and host player in transaction
     const result = await prisma.$transaction(async (tx) => {
       // 1. Create the game first
       const game = await tx.game.create({
@@ -77,14 +90,14 @@ export async function POST(request: NextRequest) {
         data: {
           gameId: game.id,
           userId: session.user.id,
-          displayName: session.user.name || 'Host',
+          displayName: displayName, // Use validated display name
           spotifyDeviceId: null,
           deviceName: 'No device selected',
           playlistsSelected: [],
           songsLoaded: false,
           loadingProgress: 0,
           isReady: false,
-          isHost: true,  // Mark as host
+          isHost: true,
           joinedAt: new Date(),
           updatedAt: new Date()
         }
@@ -108,8 +121,10 @@ export async function POST(request: NextRequest) {
       isHost: result.hostPlayer.isHost
     }
 
-    return NextResponse.json({
+    // Return sanitized response
+    return createSafeResponse({
       success: true,
+      message: `Game created successfully! Room code: ${roomCode}`,
       game: {
         id: result.game.id,
         code: result.game.code,
@@ -121,15 +136,13 @@ export async function POST(request: NextRequest) {
         host: result.game.host,
         songCache: [],
         settings: result.game.settings,
-        createdAt: result.game.createdAt
+        createdAt: result.game.createdAt,
+        updatedAt: result.game.updatedAt
       }
     })
 
   } catch (error) {
     console.error('Error creating game:', error)
-    return NextResponse.json(
-      { error: 'Failed to create game' }, 
-      { status: 500 }
-    )
+    return handleValidationError(error)
   }
 }

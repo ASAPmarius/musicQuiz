@@ -3,6 +3,14 @@ import { getServerSession } from 'next-auth/next'
 import { authOptions } from '@/pages/api/auth/[...nextauth]'
 import { LobbyPlayer, GameData, Song } from '@/lib/types/game'
 import { prisma } from '@/lib/prisma'
+import { 
+  validateRequest, 
+  validateParams, 
+  handleValidationError, 
+  createSafeResponse, 
+  getUserIdForRateLimit 
+} from '@/lib/validation/middleware'
+import { PlayerUpdateSchema, GameCodeParamSchema } from '@/lib/validation/schemas'
 
 interface RouteParams {
   params: Promise<{
@@ -13,8 +21,15 @@ interface RouteParams {
 // GET - Fetch game details
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
+    // Check authentication
+    const session = await getServerSession(authOptions)
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    }
+
+    // Validate route parameters
     const resolvedParams = await params
-    const gameCode = resolvedParams.code.toUpperCase()
+    const { code: gameCode } = validateParams(resolvedParams, GameCodeParamSchema)
     
     console.log('🔍 Fetching game details for:', gameCode)
 
@@ -142,10 +157,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
   } catch (error) {
     console.error('Error fetching game:', error)
-    return NextResponse.json(
-      { error: 'Failed to fetch game details' }, 
-      { status: 500 }
-    )
+    return handleValidationError(error)
   }
 }
 
@@ -158,24 +170,36 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
+    // Validate route parameters
     const resolvedParams = await params
-    const gameCode = resolvedParams.code.toUpperCase()
-    const body = await request.json()
-    const { playerUpdate } = body
+    const { code: gameCode } = validateParams(resolvedParams, GameCodeParamSchema)
 
-    console.log(`🔄 Player update request for ${gameCode}:`, playerUpdate)
+    // Validate and sanitize request body
+    const validatedData = await validateRequest(request, PlayerUpdateSchema, {
+      userId: getUserIdForRateLimit(session.user.id),
+      rateLimit: 'playerUpdate'
+    })
+
+    console.log(`🔄 Player update request for ${gameCode}:`, validatedData)
 
     // Find the game first to get the gameId
     const game = await prisma.game.findUnique({
       where: { code: gameCode },
-      select: { id: true }
+      select: { id: true, status: true }
     })
 
     if (!game) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // 🎯 ATOMIC UPDATE - No more race conditions!
+    // Check if game is in a state where updates are allowed
+    if (game.status === 'FINISHED' || game.status === 'CANCELLED') {
+      return NextResponse.json({ 
+        error: 'Cannot update player status in finished or cancelled game' 
+      }, { status: 400 })
+    }
+
+    // Atomic update - No more race conditions!
     const updatedPlayer = await prisma.gamePlayer.update({
       where: {
         gameId_userId: {
@@ -184,7 +208,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
         }
       },
       data: {
-        ...playerUpdate,
+        ...validatedData,
         updatedAt: new Date()
       }
     })
@@ -197,22 +221,34 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       io.to(gameCode).emit('game-updated', {
         action: 'player-updated',
         playerId: session.user.id,
-        playerUpdate,
+        playerUpdate: validatedData,
         timestamp: new Date().toISOString()
       })
     }
 
-    return NextResponse.json({ 
+    // Return sanitized response
+    return createSafeResponse({ 
       success: true, 
-      player: updatedPlayer 
+      message: 'Player updated successfully',
+      player: {
+        id: updatedPlayer.id,
+        userId: updatedPlayer.userId,
+        displayName: updatedPlayer.displayName,
+        spotifyDeviceId: updatedPlayer.spotifyDeviceId,
+        deviceName: updatedPlayer.deviceName,
+        playlistsSelected: updatedPlayer.playlistsSelected,
+        songsLoaded: updatedPlayer.songsLoaded,
+        loadingProgress: updatedPlayer.loadingProgress,
+        isReady: updatedPlayer.isReady,
+        isHost: updatedPlayer.isHost,
+        joinedAt: updatedPlayer.joinedAt.toISOString(),
+        updatedAt: updatedPlayer.updatedAt.toISOString()
+      }
     })
 
   } catch (error) {
     console.error('Error updating player:', error)
-    return NextResponse.json(
-      { error: 'Failed to update player' }, 
-      { status: 500 }
-    )
+    return handleValidationError(error)
   }
 }
 

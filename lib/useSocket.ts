@@ -157,6 +157,59 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
     }
   }, [socket, gameCode, userInfo, isConnected]) // ← This can change, but won't recreate socket
 
+  useEffect(() => {
+    if (!socket) return
+
+    // Handle validation errors from server
+    const handleValidationError = (data: { error: string; timestamp: string }) => {
+      console.warn('🚨 Socket validation error:', data.error)
+      
+      // You can show a toast notification or set an error state
+      // For now, we'll just log it, but you might want to show user feedback
+      if (data.error.includes('Rate limit')) {
+        // Handle rate limiting
+        console.warn('Rate limited - slowing down socket requests')
+      } else if (data.error.includes('Invalid')) {
+        // Handle validation errors
+        console.warn('Invalid data sent to server')
+      }
+    }
+
+    // Handle vote confirmation
+    const handleVoteConfirmed = (data: { roundId: string; timestamp: string }) => {
+      console.log('✅ Vote confirmed for round:', data.roundId)
+      // You can update UI to show vote was received
+    }
+
+    // Handle player connection events
+    const handlePlayerConnected = (data: { userId: string; displayName: string; timestamp: string }) => {
+      console.log('👥 Player connected:', data.displayName)
+      // You can show a notification that a player joined
+    }
+
+    const handlePlayerLeft = (data: { userId: string; displayName: string; timestamp: string }) => {
+      console.log('👋 Player left:', data.displayName)
+      // You can show a notification that a player left
+    }
+
+    // Register event listeners
+    socket.on('validation-error', handleValidationError)
+    socket.on('vote-confirmed', handleVoteConfirmed)
+    socket.on('player-connected', handlePlayerConnected)
+    socket.on('player-left', handlePlayerLeft)
+
+    // YOUR EXISTING EVENT HANDLERS HERE...
+
+    // Cleanup
+    return () => {
+      socket.off('validation-error', handleValidationError)
+      socket.off('vote-confirmed', handleVoteConfirmed)
+      socket.off('player-connected', handlePlayerConnected)
+      socket.off('player-left', handlePlayerLeft)
+      // YOUR EXISTING CLEANUP HERE...
+    }
+  }, [socket, /* your other dependencies */])
+
   // Helper functions for sending events
   const updatePlayerStatus = (status: PlayerStatus) => {
     if (socket && gameCode) {

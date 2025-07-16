@@ -19,13 +19,25 @@ export default function JoinGame() {
       return
     }
 
-    if (!gameCode.trim()) {
-      setError('Please enter a room code')
+    // Basic client-side validation (this now matches server validation)
+    if (!gameCode.trim() || gameCode.length !== 6) {
+      setError('Please enter a valid 6-character room code')
       return
     }
 
     if (!displayName.trim()) {
       setError('Please enter a display name')
+      return
+    }
+
+    if (displayName.length > 20) {
+      setError('Display name must be 20 characters or less')
+      return
+    }
+
+    // Check for invalid characters
+    if (!/^[a-zA-Z0-9\s\-_]+$/.test(displayName)) {
+      setError('Display name can only contain letters, numbers, spaces, hyphens, and underscores')
       return
     }
 
@@ -39,7 +51,7 @@ export default function JoinGame() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          gameCode: gameCode.trim().toUpperCase(),
+          gameCode: gameCode.trim(),
           displayName: displayName.trim()
         })
       })
@@ -47,14 +59,28 @@ export default function JoinGame() {
       const data = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to join game')
+        // Handle specific validation errors
+        if (response.status === 429) {
+          setError('Too many requests. Please wait a moment and try again.')
+        } else if (data.suggestions && data.suggestions.length > 0) {
+          // Show suggestions for display name conflicts
+          setError(`${data.error} Try: ${data.suggestions.join(', ')}`)
+        } else if (data.details && data.details.length > 0) {
+          // Show detailed validation errors
+          const detailedErrors = data.details.map((detail: any) => detail.message).join(', ')
+          setError(detailedErrors)
+        } else {
+          setError(data.error || 'Failed to join game')
+        }
+        return
       }
 
-      // Redirect to game lobby
+      // Success - redirect to game lobby
       router.push(`/game/${data.game.code}`)
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to join game')
+      console.error('Join game error:', err)
+      setError('Network error. Please check your connection and try again.')
     } finally {
       setLoading(false)
     }
