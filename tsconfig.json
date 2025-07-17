@@ -29,6 +29,6 @@
     "**/*.tsx", 
     ".next/types/**/*.ts",
     "types/**/*.ts"
-  ],
+, "lib/validation/sanitizers.js", "lib/validation/schemas.js", "lib/validation/socket-validator.js"  ],
   "exclude": ["node_modules"]
 }

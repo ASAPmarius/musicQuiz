@@ -215,11 +215,25 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     console.log('✅ Player updated successfully:', updatedPlayer.displayName)
 
-    // Emit socket event to all players in the game
+    // 🔧 FIXED: Emit socket event to ALL players in the game with specific action
     const io = (global as any).io
     if (io) {
+      // Determine the specific action based on what was updated
+      let action = 'player-updated' // default
+      
+      if (validatedData.isReady !== undefined) {
+        action = 'player-ready-changed'
+      } else if (validatedData.spotifyDeviceId !== undefined || validatedData.deviceName !== undefined) {
+        action = 'device-changed'
+      } else if (validatedData.playlistsSelected !== undefined) {
+        action = 'playlists-changed'
+      } else if (validatedData.songsLoaded !== undefined || validatedData.loadingProgress !== undefined) {
+        action = 'loading-progress-changed'
+      }
+      
+      // Emit to ALL players in the room (including the one who made the update)
       io.to(gameCode).emit('game-updated', {
-        action: 'player-updated',
+        action: action,
         playerId: session.user.id,
         playerUpdate: validatedData,
         timestamp: new Date().toISOString()
@@ -249,96 +263,5 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
   } catch (error) {
     console.error('Error updating player:', error)
     return handleValidationError(error)
-  }
-}
-
-// DELETE - Leave game (optional, for cleanup)
-export async function DELETE(request: NextRequest, { params }: RouteParams) {
-  try {
-    const session = await getServerSession(authOptions)
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
-    }
-
-    const resolvedParams = await params
-    const gameCode = resolvedParams.code.toUpperCase()
-
-    // Find the game
-    const game = await prisma.game.findUnique({
-      where: { code: gameCode },
-      select: { id: true }
-    })
-
-    if (!game) {
-      return NextResponse.json({ error: 'Game not found' }, { status: 404 })
-    }
-
-    // Remove player from game
-    const deletedPlayer = await prisma.gamePlayer.delete({
-      where: {
-        gameId_userId: {
-          gameId: game.id,
-          userId: session.user.id
-        }
-      }
-    })
-
-    // 🆕 NEW: Also clean up related song data when player leaves
-    await prisma.playerSong.deleteMany({
-      where: {
-        gameId: game.id,
-        playerId: session.user.id
-      }
-    })
-
-    // Clean up GameSong entries that have no remaining PlayerSong entries
-    const orphanedGameSongs = await prisma.gameSong.findMany({
-      where: {
-        gameId: game.id,
-        song: {
-          playerSongs: {
-            none: {
-              gameId: game.id
-            }
-          }
-        }
-      }
-    })
-
-    if (orphanedGameSongs.length > 0) {
-      await prisma.gameSong.deleteMany({
-        where: {
-          id: { in: orphanedGameSongs.map(gs => gs.id) }
-        }
-      })
-      console.log(`🧹 Cleaned up ${orphanedGameSongs.length} orphaned songs`)
-    }
-
-    // Emit socket event
-    try {
-      const io = (global as any).io
-      if (io) {
-        io.to(gameCode).emit('game-updated', {
-          action: 'player-left',
-          userId: session.user.id,
-          playerName: deletedPlayer.displayName,
-          timestamp: new Date().toISOString()
-        })
-      }
-    } catch (socketError) {
-      console.error('Error emitting player left event:', socketError)
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: 'Left game successfully'
-    })
-
-  } catch (error) {
-    console.error('Error leaving game:', error)
-    return NextResponse.json(
-      { error: 'Failed to leave game' }, 
-      { status: 500 }
-    )
   }
 }

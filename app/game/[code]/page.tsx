@@ -52,7 +52,10 @@ useEffect(() => {
       console.log('✅ Player ready status changed, refreshing game data...')
       fetchGameDetails(gameCode)
     }
-    // 🆕 ADD THIS - Handle song loading phase started
+    else if (data.action === 'player-updated') {
+      console.log('🔄 Player updated, refreshing game data...')
+      fetchGameDetails(gameCode)
+    }
     else if (data.action === 'song-loading-phase-started') {
       console.log('🎵 Song loading phase started, navigating...')
       router.push(`/game/${gameCode}/loading`)
@@ -164,9 +167,6 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
     const updatedPlayer = { ...currentPlayer, ...updates }
     setCurrentPlayer(updatedPlayer)
 
-    // Update other players via socket
-    updatePlayerStatus(updates)
-
     // Update database
     await updatePlayerInDB(updates)
     
@@ -187,16 +187,6 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
 
     // Update database
     await updatePlayerInDB(updates)
-
-    // Notify other players via socket (with null check)
-    if (socket && gameCode) {
-      socket.emit('player-ready-changed', {
-        gameCode,
-        userId: currentPlayer.userId,
-        isReady: newReadyStatus,
-        playerData: updatedPlayer
-      })
-    }
   }
 
   const handleContinueToSongLoading = () => {
