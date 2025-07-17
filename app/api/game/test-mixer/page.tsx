@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useSession } from 'next-auth/react'
+import { useRetryableFetch } from '@/lib/hooks/useRetryableFetch'
 
 interface Playlist {
   id: string
@@ -18,11 +19,23 @@ export default function TestMixer() {
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState<'playlists' | 'songs'>('playlists')
 
+  const { execute: executeWithRetry } = useRetryableFetch()
+
   const fetchPlaylists = async () => {
     setLoading(true)
     try {
-      const response = await fetch('/api/spotify/playlists')
-      const data = await response.json()
+      const data = await executeWithRetry(async () => {
+        const response = await fetch('/api/spotify/playlists')
+        
+        if (!response.ok) {
+          const error = new Error(`Failed to fetch playlists: ${response.status}`)
+          ;(error as any).status = response.status
+          throw error
+        }
+        
+        return response.json()
+      })
+      
       setPlaylists(data)
     } catch (error) {
       console.error('Failed to fetch playlists:', error)
@@ -49,16 +62,25 @@ export default function TestMixer() {
         { id: '2', name: 'Player 2 (also you)' }
       ]
       
-      const response = await fetch('/api/game/mix-selected-songs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          players: mockPlayers,
-          selectedPlaylistIds: Array.from(selectedPlaylistIds)
+      const data = await executeWithRetry(async () => {
+        const response = await fetch('/api/game/mix-selected-songs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            players: mockPlayers,
+            selectedPlaylistIds: Array.from(selectedPlaylistIds)
+          })
         })
+        
+        if (!response.ok) {
+          const error = new Error(`Mixing failed: ${response.status}`)
+          ;(error as any).status = response.status
+          throw error
+        }
+        
+        return response.json()
       })
       
-      const data = await response.json()
       setMixedSongs(data.songs)
       setStep('songs')
     } catch (error) {

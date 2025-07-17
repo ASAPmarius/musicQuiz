@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useSocket } from '@/lib/useSocket'
 import { LobbyPlayer, GameData } from '@/lib/types/game'
 import DeviceSelectionModal from '@/components/DeviceSelectionModal'
+import { useRetryableFetch } from '@/lib/hooks/useRetryableFetch'
 
 interface GameLobbyProps {
   params: Promise<{
@@ -23,6 +24,11 @@ export default function GameLobby({ params }: GameLobbyProps) {
   const [error, setError] = useState<string>('')
   const [currentPlayer, setCurrentPlayer] = useState<LobbyPlayer | null>(null)
   const [showDeviceModal, setShowDeviceModal] = useState(false)
+
+const { execute: executeWithRetry } = useRetryableFetch({
+  maxRetries: 3,
+  baseDelay: 1000
+})
 
 const userInfo = useMemo(() => {
   if (session?.user?.id && currentPlayer?.displayName) {
@@ -119,15 +125,23 @@ const fetchGameDetails = async (codeToUse?: string) => {
 
   try {
     console.log('📡 Making API call to:', `/api/game/${currentGameCode}`)
-    const response = await fetch(`/api/game/${currentGameCode}`)
     
-    if (!response.ok) {
-      const errorText = await response.text()
-      console.error('❌ API Error:', response.status, errorText)
-      throw new Error(`Server error: ${response.status}`)
-    }
+    const data = await executeWithRetry(async () => {
+      const response = await fetch(`/api/game/${currentGameCode}`)
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('❌ API Error:', response.status, errorText)
+        
+        // Create error with status for retry logic
+        const error = new Error(`Server error: ${response.status}`)
+        ;(error as any).status = response.status
+        throw error
+      }
+      
+      return response.json()
+    })
     
-    const data = await response.json()
     console.log('✅ Received game data:', data.game)
     
     setGame(data.game)
@@ -140,7 +154,6 @@ const fetchGameDetails = async (codeToUse?: string) => {
     console.error('❌ Fetch error:', err)
     setError(err instanceof Error ? err.message : 'Failed to load game')
   } finally {
-    console.log('🏁 Setting loading to false')
     setLoading(false)
   }
 }

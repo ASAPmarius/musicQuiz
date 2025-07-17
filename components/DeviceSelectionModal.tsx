@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
+import { useRetryableFetch } from '@/lib/hooks/useRetryableFetch'
 
 interface SpotifyDevice {
   id: string
@@ -33,6 +34,9 @@ export default function DeviceSelectionModal({
   const [devices, setDevices] = useState<SpotifyDevice[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  // Add retry hook
+  const { execute: executeWithRetry, loading: retryLoading, error: retryError } = useRetryableFetch()
 
   // Reuse the same spotify fetch logic from SpotifyWebPlayer
   const spotifyFetch = useCallback(async (endpoint: string, options: RequestInit = {}) => {
@@ -67,7 +71,7 @@ export default function DeviceSelectionModal({
     return data
   }, [session])
 
-  // Fetch devices (reuse logic from SpotifyWebPlayer)
+  // Enhanced fetchDevices with retry mechanism
   const fetchDevices = useCallback(async () => {
     if (!isOpen) return // Only fetch when modal is open
     
@@ -75,16 +79,16 @@ export default function DeviceSelectionModal({
     setError('')
     
     try {
-      const data = await spotifyFetch('/me/player/devices')
+      const data = await executeWithRetry(() => spotifyFetch('/me/player/devices'))
       const deviceList = data?.devices || []
       setDevices(deviceList)
     } catch (error) {
       console.error('Failed to fetch devices:', error)
-      setError('Failed to fetch devices')
+      setError(error instanceof Error ? error.message : 'Failed to fetch devices')
     } finally {
       setLoading(false)
     }
-  }, [spotifyFetch, isOpen])
+  }, [isOpen, executeWithRetry, spotifyFetch])
 
   // Fetch devices when modal opens
   useEffect(() => {
@@ -118,18 +122,26 @@ export default function DeviceSelectionModal({
             Choose where you want to hear the quiz music. If you're in the same room as other players, you can select "No device".
           </p>
 
-          {/* Loading state */}
-          {loading && (
+          {/* Loading state - Updated to include retry loading */}
+          {(loading || retryLoading) && (
             <div className="text-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500 mx-auto mb-2"></div>
               <p>Finding your devices...</p>
+              {retryLoading && (
+                <p className="text-xs text-gray-500 mt-1">Retrying...</p>
+              )}
             </div>
           )}
 
-          {/* Error state */}
+          {/* Error state - Enhanced with retry information */}
           {error && (
             <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
               <p className="text-red-700">❌ {error}</p>
+              {retryError && (
+                <p className="text-xs text-red-500 mt-1">
+                  Attempted multiple retries
+                </p>
+              )}
               <button 
                 onClick={fetchDevices}
                 className="mt-2 text-sm text-red-600 hover:text-red-800 underline"
@@ -139,8 +151,8 @@ export default function DeviceSelectionModal({
             </div>
           )}
 
-          {/* Device list */}
-          {!loading && (
+          {/* Device list - Updated loading condition */}
+          {!(loading || retryLoading) && (
             <div className="space-y-2 max-h-60 overflow-y-auto">
               {/* No device option */}
               <button
@@ -187,8 +199,8 @@ export default function DeviceSelectionModal({
                 </button>
               ))}
 
-              {/* No devices found */}
-              {devices.length === 0 && !loading && !error && (
+              {/* No devices found - Updated loading condition */}
+              {devices.length === 0 && !(loading || retryLoading) && !error && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                   <h4 className="font-medium text-yellow-800 mb-2">No Spotify devices found</h4>
                   <p className="text-sm text-yellow-700 mb-3">

@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { useSocket } from '@/lib/useSocket'
 import { useTokenRefresh } from '@/lib/hooks/useTokenRefresh'
 import { LobbyPlayer, GameData } from '@/lib/types/game'
-
+import { useRetryableFetch } from '@/lib/hooks/useRetryableFetch'
 
 interface SongLoadingProps {
   params: Promise<{
@@ -45,6 +45,11 @@ export default function SongLoading({ params }: SongLoadingProps) {
   // Add ref to prevent excessive API calls
   const lastFetchTime = useRef<number>(0)
   const fetchTimeout = useRef<NodeJS.Timeout | null>(null)
+
+  const { execute: executeWithRetry } = useRetryableFetch({
+    maxRetries: 3,
+    baseDelay: 1000
+  })
 
   const userInfo = useMemo(() => {
     if (session?.user?.id && currentPlayer?.displayName) {
@@ -110,7 +115,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
     if (isAuthenticated && gameCode) {
       console.log('🚀 Starting to fetch game details...')
       setError('') // Clear any previous errors
-      fetchGameDetails(true) // Force initial fetch
+      fetchGameDetails() // Force initial fetch
     }
   }, [isAuthenticated, gameCode])
 
@@ -161,7 +166,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
         // Debounced fetch - wait 1 second in case multiple events come in
         fetchTimeout.current = setTimeout(async () => {
           if (gameCode) {
-            await fetchGameDetails(true)
+            await fetchGameDetails()
           }
         }, 1000)
       }
@@ -177,50 +182,45 @@ export default function SongLoading({ params }: SongLoadingProps) {
     }
   }, [socket, gameCode, session?.user?.id])
 
-  const fetchGameDetails = async (force = false) => {
-    const now = Date.now()
+  const fetchGameDetails = async (codeToUse?: string) => {
+    const currentGameCode = codeToUse || gameCode
+    console.log('🔍 fetchGameDetails called with gameCode:', currentGameCode)
     
-    // Prevent spam requests (max once per second)
-    if (!force && (now - lastFetchTime.current) < 1000) {
-      console.log('🛑 Skipping fetch - too frequent')
-      return null
-    }
-    
-    lastFetchTime.current = now
-    
-    if (!gameCode || gameCode.length !== 6) {
-      console.log('⚠️ Invalid gameCode, stopping fetch')
+    if (!currentGameCode || currentGameCode.length !== 6) {
+      console.log('⚠️ Invalid gameCode, stopping loading')
       setLoading(false)
-      return null
+      return
     }
 
     try {
-      console.log('📡 Fetching game details for:', gameCode)
-      const response = await fetch(`/api/game/${gameCode}`)
+      console.log('📡 Making API call to:', `/api/game/${currentGameCode}`)
       
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error('❌ API Error:', response.status, errorText)
-        throw new Error(`Server error: ${response.status}`)
-      }
+      const data = await executeWithRetry(async () => {
+        const response = await fetch(`/api/game/${currentGameCode}`)
+        
+        if (!response.ok) {
+          const errorText = await response.text()
+          console.error('❌ API Error:', response.status, errorText)
+          
+          const error = new Error(`Server error: ${response.status}`)
+          ;(error as any).status = response.status
+          throw error
+        }
+        
+        return response.json()
+      })
       
-      const data = await response.json()
-      console.log('✅ Received game data')
-      
+      console.log('✅ Received game data:', data.game)
       setGame(data.game)
       
-      // Find current player
-      const player = data.game.players?.find((p: LobbyPlayer) => p.userId === session?.user?.id)
+      // Find current player logic stays the same...
+      const player = data.game.players.find((p: LobbyPlayer) => p.userId === session?.user?.id)
       setCurrentPlayer(player || null)
-      
-      return data.game
 
     } catch (err) {
       console.error('❌ Fetch error:', err)
       setError(err instanceof Error ? err.message : 'Failed to load game')
-      return null
     } finally {
-      console.log('🏁 Setting loading to false')
       setLoading(false)
     }
   }
@@ -246,47 +246,31 @@ export default function SongLoading({ params }: SongLoadingProps) {
     return playlistSongs + 200 + 300 // + estimated liked songs + estimated albums
   }
 
-  // 🆕 ENHANCED PLAYLIST LOADING WITH TOKEN REFRESH HANDLING
   const fetchPlaylists = async () => {
+    if (!session?.accessToken) return
+    
     setLoadingPlaylists(true)
+    
     try {
-      const response = await fetch('/api/spotify/playlists')
-      
-      // 🆕 HANDLE TOKEN REFRESH ERRORS
-      if (response.status === 401) {
-        const errorData = await response.json()
-        if (errorData.needsReauth) {
-          setError('Your Spotify session has expired. Please refresh the page.')
-          return
+      const data = await executeWithRetry(async () => {
+        const response = await fetch('/api/spotify/playlists')
+        
+        if (!response.ok) {
+          const error = new Error(`Failed to fetch playlists: ${response.status}`)
+          ;(error as any).status = response.status
+          throw error
         }
-      }
-      
-      if (!response.ok) {
-        throw new Error(`Failed to fetch playlists: ${response.status}`)
-      }
-      
-      const data: Playlist[] = await response.json()
+        
+        return response.json()
+      })
+
       setPlaylists(data)
-      
-      // Pre-select all playlists (user can uncheck what they don't want)
-      const allIds = new Set<string>(data.map((p: Playlist) => p.id))
-      setSelectedPlaylistIds(allIds)
-      
-      // Update database with pre-selected playlists
-      const updates: Partial<LobbyPlayer> = { 
-        playlistsSelected: Array.from(allIds) 
-      }
-      await updatePlayerInDB(updates)
-      
-      // Update socket status
-      const statusUpdate = { 
-        playlistsSelected: Array.from(allIds) 
-      }
-      updatePlayerStatus(statusUpdate)
-      
+      const allPlaylistIds = new Set<string>(data.map((p: Playlist) => p.id))
+      setSelectedPlaylistIds(allPlaylistIds)
+
     } catch (error) {
       console.error('Failed to fetch playlists:', error)
-      setError(error instanceof Error ? error.message : 'Failed to fetch playlists')
+      setError(error instanceof Error ? error.message : 'Failed to load playlists')
     } finally {
       setLoadingPlaylists(false)
     }
@@ -441,7 +425,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
           onClick={() => {
             setError('')
             setLoading(true)
-            if (gameCode) fetchGameDetails(true)
+            if (gameCode) fetchGameDetails()
           }}
           className="bg-blue-500 text-white px-4 py-2 rounded mr-2"
         >

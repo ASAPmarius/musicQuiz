@@ -80,8 +80,13 @@ export default function CreateGame() {
         return
       }
 
-      // Success - redirect to game lobby
-      router.push(`/game/${data.game.code}`)
+      // After successful game creation
+      console.log('✅ Game created:', data.game)
+
+      // Small delay to let the page settle before navigation
+      setTimeout(() => {
+        router.push(`/game/${data.game.code}`)
+      }, 100)
 
     } catch (err) {
       console.error('Create game error:', err)

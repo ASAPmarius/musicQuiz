@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
+import { useRetryableFetch } from '@/lib/hooks/useRetryableFetch'
 
 interface SpotifyWebPlayerProps {
   trackUri?: string
@@ -48,6 +49,12 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     queueLength: number
   } | null>(null)
 
+  // Add retry mechanism
+  const { execute: executeWithRetry } = useRetryableFetch({
+    maxRetries: 2, // Shorter retries for real-time playback
+    baseDelay: 500
+  })
+
   const checkRateLimiterStatus = useCallback(async () => {
     if (!session?.user?.id) return
     
@@ -80,14 +87,14 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     )
   }, [session])
 
-  // Fetch available devices
-  const fetchDevices = useCallback(async () => {
+  // Fetch available devices with retry and proper typing
+  const fetchDevices = useCallback(async (): Promise<SpotifyDevice[]> => {
     try {
-      const data = await spotifyFetch('/me/player/devices')
-      const deviceList = data?.devices || []
+      const data = await executeWithRetry(() => spotifyFetch('/me/player/devices'))
+      const deviceList: SpotifyDevice[] = data?.devices || []
       setDevices(deviceList)
       
-      // Find active device
+      // Find active device with proper typing
       const active = deviceList.find((d: SpotifyDevice) => d.is_active)
       setActiveDevice(active || null)
       
@@ -102,12 +109,12 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
       setError('Failed to fetch devices')
       return []
     }
-  }, [spotifyFetch, onPlayerReady])
+  }, [spotifyFetch, onPlayerReady, executeWithRetry])
 
-  // Fetch current playback state
+  // Fetch current playback state with retry
   const fetchPlaybackState = useCallback(async () => {
     try {
-      const state = await spotifyFetch('/me/player')
+      const state = await executeWithRetry(() => spotifyFetch('/me/player'))
       setPlaybackState(state)
       
       if (state?.device) {
@@ -122,21 +129,21 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
       }
       return null
     }
-  }, [spotifyFetch])
+  }, [spotifyFetch, executeWithRetry])
 
-  // Transfer playback to a specific device
+  // Transfer playback to a specific device with retry
   const transferPlayback = useCallback(async (deviceId: string, play: boolean = false) => {
     setTransferringPlayback(true)
     setError('')
     
     try {
-      await spotifyFetch('/me/player', {
+      await executeWithRetry(() => spotifyFetch('/me/player', {
         method: 'PUT',
         body: JSON.stringify({
           device_ids: [deviceId],
           play
         })
-      })
+      }))
       
       // Wait a bit for transfer to complete
       await new Promise(resolve => setTimeout(resolve, 1000))
@@ -153,9 +160,9 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     } finally {
       setTransferringPlayback(false)
     }
-  }, [spotifyFetch, fetchDevices, fetchPlaybackState])
+  }, [spotifyFetch, fetchDevices, fetchPlaybackState, executeWithRetry])
 
-  // Play a specific track
+  // Play a specific track with retry and fixed logic
   const playTrack = useCallback(async (uri: string, deviceId?: string) => {
     try {
       const targetDevice = deviceId || activeDevice?.id
@@ -163,7 +170,7 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
       if (!targetDevice) {
         // No device available, try to get one
         const deviceList = await fetchDevices()
-        if (deviceList.length === 0) {
+        if (!deviceList || deviceList.length === 0) {  // Fixed: proper check for empty array
           setError('No Spotify devices found. Please open Spotify on your device.')
           return
         }
@@ -172,16 +179,16 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
         await transferPlayback(deviceList[0].id)
         
         // Try playing on the newly activated device
-        await spotifyFetch(`/me/player/play?device_id=${deviceList[0].id}`, {
+        await executeWithRetry(() => spotifyFetch(`/me/player/play?device_id=${deviceList[0].id}`, {
           method: 'PUT',
           body: JSON.stringify({ uris: [uri] })
-        })
+        }))
       } else {
         // Play on specific device
-        await spotifyFetch(`/me/player/play${targetDevice ? `?device_id=${targetDevice}` : ''}`, {
+        await executeWithRetry(() => spotifyFetch(`/me/player/play${targetDevice ? `?device_id=${targetDevice}` : ''}`, {
           method: 'PUT',
           body: JSON.stringify({ uris: [uri] })
-        })
+        }))
       }
       
       // Update state after playing
@@ -190,15 +197,15 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
       console.error('Play failed:', error)
       setError(error instanceof Error ? error.message : 'Failed to play track')
     }
-  }, [activeDevice, spotifyFetch, fetchDevices, transferPlayback, fetchPlaybackState])
+  }, [activeDevice, spotifyFetch, fetchDevices, transferPlayback, fetchPlaybackState, executeWithRetry])
 
-  // Playback controls
+  // Playback controls with retry
   const togglePlayback = useCallback(async () => {
     try {
       if (playbackState?.is_playing) {
-        await spotifyFetch('/me/player/pause', { method: 'PUT' })
+        await executeWithRetry(() => spotifyFetch('/me/player/pause', { method: 'PUT' }))
       } else {
-        await spotifyFetch('/me/player/play', { method: 'PUT' })
+        await executeWithRetry(() => spotifyFetch('/me/player/play', { method: 'PUT' }))
       }
       
       // Update state
@@ -206,25 +213,25 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Playback control failed')
     }
-  }, [playbackState, spotifyFetch, fetchPlaybackState])
+  }, [playbackState, spotifyFetch, fetchPlaybackState, executeWithRetry])
 
   const skipToNext = useCallback(async () => {
     try {
-      await spotifyFetch('/me/player/next', { method: 'POST' })
+      await executeWithRetry(() => spotifyFetch('/me/player/next', { method: 'POST' }))
       setTimeout(fetchPlaybackState, 500)
     } catch (error) {
       setError('Failed to skip track')
     }
-  }, [spotifyFetch, fetchPlaybackState])
+  }, [spotifyFetch, fetchPlaybackState, executeWithRetry])
 
   const skipToPrevious = useCallback(async () => {
     try {
-      await spotifyFetch('/me/player/previous', { method: 'POST' })
+      await executeWithRetry(() => spotifyFetch('/me/player/previous', { method: 'POST' }))
       setTimeout(fetchPlaybackState, 500)
     } catch (error) {
       setError('Failed to go to previous track')
     }
-  }, [spotifyFetch, fetchPlaybackState])
+  }, [spotifyFetch, fetchPlaybackState, executeWithRetry])
 
   // Format time helper
   const formatTime = (ms: number) => {
@@ -244,7 +251,7 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
       setIsLoading(true)
       await fetchDevices()
       await fetchPlaybackState()
-      await checkRateLimiterStatus()  // <- Add this
+      await checkRateLimiterStatus()
       setIsLoading(false)
     }
 
@@ -253,7 +260,7 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     // Poll for updates every 5 seconds
     const interval = setInterval(() => {
       fetchPlaybackState()
-      checkRateLimiterStatus()  // <- Add this
+      checkRateLimiterStatus()
     }, 5000)
 
     return () => clearInterval(interval)
@@ -279,7 +286,7 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
         <div className={`px-3 py-1 rounded-full text-sm ${activeDevice ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}>
           Active: {activeDevice?.name || 'None'}
         </div>
-        {/* NEW: Rate limiter status */}
+        {/* Rate limiter status */}
         {rateLimiterStatus && (
           <div className="px-3 py-1 rounded-full text-sm bg-purple-100 text-purple-700">
             Tokens: {rateLimiterStatus.tokens} | Queue: {rateLimiterStatus.queueLength}
