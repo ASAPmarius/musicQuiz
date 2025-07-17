@@ -46,15 +46,18 @@ useEffect(() => {
     
     if (data.action === 'player-joined') {
       console.log('👥 Someone joined, refreshing game data...')
-      fetchGameDetails(gameCode)
+      console.log('🔄 About to call fetchGameDetails...')
+      fetchGameDetails()
     }
     else if (data.action === 'player-ready-changed') {
       console.log('✅ Player ready status changed, refreshing game data...')
-      fetchGameDetails(gameCode)
+      console.log('🔄 About to call fetchGameDetails...')
+      fetchGameDetails()
     }
     else if (data.action === 'player-updated') {
       console.log('🔄 Player updated, refreshing game data...')
-      fetchGameDetails(gameCode)
+      console.log('🔄 About to call fetchGameDetails...')
+      fetchGameDetails()
     }
     else if (data.action === 'song-loading-phase-started') {
       console.log('🎵 Song loading phase started, navigating...')
@@ -142,21 +145,50 @@ const fetchGameDetails = async (codeToUse?: string) => {
   }
 }
 
-  // Update player status in database
-  const updatePlayerInDB = async (updates: Partial<LobbyPlayer>) => {
-    try {
-      await fetch(`/api/game/${gameCode}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playerUpdate: updates })
-      })
-    } catch (err) {
-      console.error('Failed to update player in DB:', err)
+const updatePlayerInDB = async (updates: Partial<LobbyPlayer>) => {
+  console.log('🔄 updatePlayerInDB called with:', updates)
+  console.log('🔄 Current gameCode:', gameCode)
+  
+  // Send the updates directly, not wrapped in playerUpdate
+  const requestBody = JSON.stringify(updates) // ← Changed from { playerUpdate: updates }
+  console.log('🔄 Request body being sent:', requestBody)
+  
+  try {
+    console.log('📤 Making API call to:', `/api/game/${gameCode}`)
+    
+    const response = await fetch(`/api/game/${gameCode}`, {
+      method: 'PUT',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache'
+      },
+      body: requestBody // Now sending {"isReady":true} directly
+    })
+    
+    console.log('📥 API response status:', response.status)
+    console.log('📥 API response ok:', response.ok)
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ API Error:', errorText)
+      throw new Error(`Server error: ${response.status}`)
     }
+    
+    const responseData = await response.json()
+    console.log('✅ API response data:', responseData)
+    
+  } catch (err) {
+    console.error('❌ Failed to update player in DB:', err)
   }
+}
 
 // Handle device selection
 const handleDeviceSelect = async (deviceId: string | null, deviceName: string) => {
+  console.log('🔧 handleDeviceSelect called!')
+  console.log('🔧 deviceId:', deviceId)
+  console.log('🔧 deviceName:', deviceName)
+  console.log('🔧 Call stack:', new Error().stack)
+  
   const updates = {
     spotifyDeviceId: deviceId,
     deviceName: deviceName
@@ -170,24 +202,37 @@ const handleDeviceSelect = async (deviceId: string | null, deviceName: string) =
     // Update database
     await updatePlayerInDB(updates)
     
-    // 🆕 ADD THIS: Refresh game state from database to get the latest data
+    // Refresh game state from database to get the latest data
     await fetchGameDetails()
   }
 }
 
-  const handleReadyToggle = async () => {
-    if (!currentPlayer) return
 
-    const newReadyStatus = !currentPlayer.isReady
-    const updates = { isReady: newReadyStatus }
-
-    // Update local state
-    const updatedPlayer = { ...currentPlayer, isReady: newReadyStatus }
-    setCurrentPlayer(updatedPlayer)
-
-    // Update database
-    await updatePlayerInDB(updates)
+const handleReadyToggle = async () => {
+  console.log('🟢 handleReadyToggle called!')
+  console.log('🟢 Current player:', currentPlayer)
+  
+  if (!currentPlayer) {
+    console.log('❌ No current player, returning')
+    return
   }
+
+  const newReadyStatus = !currentPlayer.isReady
+  console.log('🟢 Toggling ready status from', currentPlayer.isReady, 'to', newReadyStatus)
+  
+  const updates = { isReady: newReadyStatus }
+  console.log('🟢 Updates to send:', updates)
+
+  // Update local state
+  const updatedPlayer = { ...currentPlayer, isReady: newReadyStatus }
+  console.log('🟢 Updated player for local state:', updatedPlayer)
+  setCurrentPlayer(updatedPlayer)
+
+  // Update database
+  console.log('🟢 About to call updatePlayerInDB...')
+  await updatePlayerInDB(updates)
+  console.log('🟢 updatePlayerInDB completed')
+}
 
   const handleContinueToSongLoading = () => {
     if (currentPlayer?.isHost && game) {

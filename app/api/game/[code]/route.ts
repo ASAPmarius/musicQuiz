@@ -180,6 +180,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       rateLimit: 'playerUpdate'
     })
 
+    console.log('🔄 PUT request received for game:', gameCode)
+    console.log('🔄 Request body:', JSON.stringify(validatedData, null, 2))
+    console.log('🔄 User ID:', session.user.id)
+
     console.log(`🔄 Player update request for ${gameCode}:`, validatedData)
 
     // Find the game first to get the gameId
@@ -230,6 +234,11 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       } else if (validatedData.songsLoaded !== undefined || validatedData.loadingProgress !== undefined) {
         action = 'loading-progress-changed'
       }
+
+      console.log('🔄 About to emit WebSocket event')
+      console.log('🔄 Action will be:', action)
+      console.log('🔄 Player update data:', validatedData)
+      console.log('🔄 Game code for emission:', gameCode)
       
       // Emit to ALL players in the room (including the one who made the update)
       io.to(gameCode).emit('game-updated', {
