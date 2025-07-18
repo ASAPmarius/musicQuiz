@@ -37,8 +37,20 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
 
   // 🔧 FIX: Create socket connection ONCE and keep it stable
   useEffect(() => {
-    console.log('🔌 Creating socket connection...')
-    
+    // Don't create socket until we have a valid gameCode
+    if (!gameCode || gameCode.length !== 6) {
+      console.log('⏸️ Waiting for valid gameCode before creating socket...')
+      return
+    }
+
+    // Only create socket if we don't already have one
+    if (socket) {
+      console.log('✅ Socket already exists, skipping creation')
+      return
+    }
+
+    console.log('🔌 Creating socket connection for gameCode:', gameCode)
+
     // Use current origin (works with ngrok, localhost, and production)
     const socketUrl = process.env.NODE_ENV === 'production' 
       ? undefined  // Will use current origin
@@ -106,8 +118,9 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
     return () => {
       console.log('🧹 Cleaning up socket connection')
       newSocket.close()
+      setSocket(null) // Clear socket state
     }
-  }, []) // ← EMPTY dependency array - create once and keep stable!
+  }, [gameCode])
 
   // Update game room when gameCode changes
   useEffect(() => {
@@ -118,8 +131,8 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
         socket.emit('leave-game', gameCodeRef.current)
       }
       
-      // Join new room
-      if (gameCode) {
+      // Join new room - ONLY if gameCode is valid (6 characters)
+      if (gameCode && gameCode.length === 6) {  // ← PRECISE FIX
         if (userInfo) {
           console.log('🔄 Joining new game room with user identification:', gameCode, userInfo)
           socket.emit('join-game-with-user', {
@@ -131,6 +144,8 @@ export function useSocket(gameCode?: string, userInfo?: UserInfo) {
           console.log('🔄 Joining new game room (legacy):', gameCode)
           socket.emit('join-game', gameCode)
         }
+      } else if (gameCode && gameCode.length !== 6) {
+        console.log('⚠️ Invalid gameCode for socket room join:', gameCode)
       }
       
       gameCodeRef.current = gameCode

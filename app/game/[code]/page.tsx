@@ -91,24 +91,31 @@ useEffect(() => {
 }, [socket, gameCode, router])
 
 useEffect(() => {
-  console.log('🎯 Extracting gameCode from params...')
-  params.then(resolvedParams => {
-    const extractedCode = resolvedParams.code.toUpperCase()
-    console.log('✅ GameCode extracted:', extractedCode)
-    setGameCode(extractedCode)
-  }).catch(err => {
-    console.error('❌ Failed to extract params:', err)
-    setLoading(false)
-  })
+  async function extractGameCode() {
+    try {
+      const resolvedParams = await params
+      const extractedCode = resolvedParams.code.toUpperCase()
+      console.log('✅ GameCode extracted:', extractedCode)
+      setGameCode(extractedCode)
+    } catch (err) {
+      console.error('❌ Failed to extract game code:', err)
+      setLoading(false)
+    }
+  }
+  
+  extractGameCode()
 }, [params])
 
 // Load game on mount (only when we have gameCode)
 useEffect(() => {
   console.log('🔄 Fetch trigger - session:', !!session, 'gameCode:', gameCode)
   
-  if (session && gameCode) {
+  // Add validation to prevent empty gameCode attempts
+  if (session && gameCode && gameCode.length === 6) {
     console.log('🚀 Triggering fetchGameDetails...')
     fetchGameDetails()
+  } else if (gameCode && gameCode.length !== 6) {
+    console.log('⚠️ Invalid gameCode length:', gameCode.length)
   }
 }, [session, gameCode])
 
@@ -126,22 +133,16 @@ const fetchGameDetails = async (codeToUse?: string) => {
   try {
     console.log('📡 Making API call to:', `/api/game/${currentGameCode}`)
     
-    const data = await executeWithRetry(async () => {
-      const response = await fetch(`/api/game/${currentGameCode}`)
-      
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error('❌ API Error:', response.status, errorText)
-        
-        // Create error with status for retry logic
-        const error = new Error(`Server error: ${response.status}`)
-        ;(error as any).status = response.status
-        throw error
-      }
-      
-      return response.json()
-    })
+    // Use direct fetch for initial load (bypass retry mechanism during navigation)
+    const response = await fetch(`/api/game/${currentGameCode}`)
     
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ API Error:', response.status, errorText)
+      throw new Error(`Server error: ${response.status}`)
+    }
+    
+    const data = await response.json()
     console.log('✅ Received game data:', data.game)
     
     setGame(data.game)
