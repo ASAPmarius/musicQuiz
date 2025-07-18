@@ -24,18 +24,14 @@ export default function TestMixer() {
   const fetchPlaylists = async () => {
     setLoading(true)
     try {
-      const data = await executeWithRetry(async () => {
-        const response = await fetch('/api/spotify/playlists')
-        
-        if (!response.ok) {
-          const error = new Error(`Failed to fetch playlists: ${response.status}`)
-          ;(error as any).status = response.status
-          throw error
-        }
-        
-        return response.json()
-      })
+      // 🔧 Use direct fetch for initial load
+      const response = await fetch('/api/spotify/playlists')
       
+      if (!response.ok) {
+        throw new Error(`Failed to fetch playlists: ${response.status}`)
+      }
+      
+      const data = await response.json()
       setPlaylists(data)
     } catch (error) {
       console.error('Failed to fetch playlists:', error)

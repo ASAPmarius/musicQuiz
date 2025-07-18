@@ -240,7 +240,7 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
     return `${minutes}:${seconds.toString().padStart(2, '0')}`
   }
 
-  // Initial load
+  // Replace the useEffect with this:
   useEffect(() => {
     if (!session?.accessToken) {
       setIsLoading(false)
@@ -249,22 +249,53 @@ export default function SpotifyWebPlayer({ trackUri, onPlayerReady }: SpotifyWeb
 
     const initialize = async () => {
       setIsLoading(true)
-      await fetchDevices()
-      await fetchPlaybackState()
+      
+      // 🔧 Use direct fetch for mount-time calls
+      try {
+        // Direct fetch for devices (no retry during mount)
+        const deviceData = await spotifyFetch('/me/player/devices')
+        const deviceList = deviceData?.devices || []
+        setDevices(deviceList)
+        
+        const active = deviceList.find((d: SpotifyDevice) => d.is_active)
+        setActiveDevice(active || null)
+        
+        if (deviceList.length > 0 && !active && onPlayerReady) {
+          onPlayerReady(deviceList[0].id)
+        }
+      } catch (error) {
+        console.error('Failed to fetch devices on mount:', error)
+        setError('Failed to fetch devices')
+      }
+      
+      // Direct fetch for playback state (no retry during mount)
+      try {
+        const state = await spotifyFetch('/me/player')
+        setPlaybackState(state)
+        if (state?.device) {
+          setActiveDevice(state.device)
+        }
+      } catch (error) {
+        // No active playback is not an error
+        if (!(error instanceof Error && error.message.includes('204'))) {
+          console.error('Failed to fetch playback state on mount:', error)
+        }
+      }
+      
       await checkRateLimiterStatus()
       setIsLoading(false)
     }
 
     initialize()
 
-    // Poll for updates every 5 seconds
+    // Poll for updates every 5 seconds (keep retry for intervals - they're less problematic)
     const interval = setInterval(() => {
-      fetchPlaybackState()
+      fetchPlaybackState()  // These can keep retry since they're not mount-related
       checkRateLimiterStatus()
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [session, fetchDevices, fetchPlaybackState, checkRateLimiterStatus])
+  }, [session, onPlayerReady]) // 🔧 Simplified dependencies
 
   // Handle trackUri changes
   useEffect(() => {

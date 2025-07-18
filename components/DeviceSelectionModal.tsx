@@ -71,15 +71,15 @@ export default function DeviceSelectionModal({
     return data
   }, [session])
 
-  // Enhanced fetchDevices with retry mechanism
   const fetchDevices = useCallback(async () => {
-    if (!isOpen) return // Only fetch when modal is open
+    if (!isOpen) return
     
     setLoading(true)
     setError('')
     
     try {
-      const data = await executeWithRetry(() => spotifyFetch('/me/player/devices'))
+      // 🔧 Use direct fetch instead of retry for modal opening
+      const data = await spotifyFetch('/me/player/devices')
       const deviceList = data?.devices || []
       setDevices(deviceList)
     } catch (error) {
@@ -88,7 +88,7 @@ export default function DeviceSelectionModal({
     } finally {
       setLoading(false)
     }
-  }, [isOpen, executeWithRetry, spotifyFetch])
+  }, [isOpen, spotifyFetch]) // 🔧 Remove executeWithRetry dependency
 
   // Fetch devices when modal opens
   useEffect(() => {

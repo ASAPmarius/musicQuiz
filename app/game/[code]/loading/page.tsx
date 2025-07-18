@@ -195,20 +195,16 @@ export default function SongLoading({ params }: SongLoadingProps) {
     try {
       console.log('📡 Making API call to:', `/api/game/${currentGameCode}`)
       
-      const data = await executeWithRetry(async () => {
-        const response = await fetch(`/api/game/${currentGameCode}`)
-        
-        if (!response.ok) {
-          const errorText = await response.text()
-          console.error('❌ API Error:', response.status, errorText)
-          
-          const error = new Error(`Server error: ${response.status}`)
-          ;(error as any).status = response.status
-          throw error
-        }
-        
-        return response.json()
-      })
+      // 🔧 CHANGE THIS: Use direct fetch instead of executeWithRetry
+      const response = await fetch(`/api/game/${currentGameCode}`)
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('❌ API Error:', response.status, errorText)
+        throw new Error(`Server error: ${response.status}`)
+      }
+      
+      const data = await response.json()
       
       console.log('✅ Received game data:', data.game)
       setGame(data.game)
@@ -219,7 +215,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
 
     } catch (err) {
       console.error('❌ Fetch error:', err)
-      setError(err instanceof Error ? err.message : 'Failed to load game')
+      setError(err instanceof Error ? err.message : 'Unknown error occurred')
     } finally {
       setLoading(false)
     }
@@ -252,17 +248,14 @@ export default function SongLoading({ params }: SongLoadingProps) {
     setLoadingPlaylists(true)
     
     try {
-      const data = await executeWithRetry(async () => {
-        const response = await fetch('/api/spotify/playlists')
-        
-        if (!response.ok) {
-          const error = new Error(`Failed to fetch playlists: ${response.status}`)
-          ;(error as any).status = response.status
-          throw error
-        }
-        
-        return response.json()
-      })
+      // 🔧 CHANGE: Use direct fetch instead of executeWithRetry
+      const response = await fetch('/api/spotify/playlists')
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch playlists: ${response.status}`)
+      }
+      
+      const data = await response.json()
 
       setPlaylists(data)
       const allPlaylistIds = new Set<string>(data.map((p: Playlist) => p.id))
