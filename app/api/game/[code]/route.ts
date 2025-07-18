@@ -168,16 +168,15 @@ export async function PUT(request: NextRequest, { params }: { params: { code: st
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
-    // Validate route parameters
-    const { code: gameCode } = validateParams(params, GameCodeParamSchema)
+    const resolvedParams = await params
+    const { code: gameCode } = validateParams(resolvedParams, GameCodeParamSchema)
 
     // ✅ Read body ONCE and then validate it
     const body = await request.json()
     console.log('🚨 DEBUG: Raw request body:', JSON.stringify(body, null, 2))
-    console.log('🚨 DEBUG: playerUpdate field:', body.playerUpdate)
     
     // ✅ Validate the pre-parsed body instead of re-reading
-    const validatedData = PlayerUpdateSchema.parse(body.playerUpdate)
+    const validatedData = PlayerUpdateSchema.parse(body)
     
     console.log('🔍 DEBUG: Fields being updated:', Object.keys(validatedData))
     console.log('🔍 DEBUG: playlistsSelected value:', validatedData.playlistsSelected)

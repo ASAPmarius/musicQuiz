@@ -283,7 +283,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
       const response = await fetch(`/api/game/${gameCode}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playerUpdate: updates })
+        body: JSON.stringify(updates) // ← Remove the playerUpdate wrapper
       })
       
       console.log(`🔍 ${timestamp} - API response status:`, response.status)
@@ -319,6 +319,12 @@ export default function SongLoading({ params }: SongLoadingProps) {
       setPlaylists(data)
       const allPlaylistIds = new Set<string>(data.map((p: Playlist) => p.id))
       setSelectedPlaylistIds(allPlaylistIds)
+
+      // ✅ ADD: Update database immediately so other players see the count
+      const updates: Partial<LobbyPlayer> = { 
+        playlistsSelected: Array.from(allPlaylistIds) 
+      }
+      await updatePlayerInDB(updates)
 
     } catch (error) {
       console.error('Failed to fetch playlists:', error)
