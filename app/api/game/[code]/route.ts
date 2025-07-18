@@ -161,49 +161,48 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 }
 
-// PUT - Update player status (atomic updates with socket events)
-export async function PUT(request: NextRequest, { params }: RouteParams) {
+export async function PUT(request: NextRequest, { params }: { params: { code: string } }) {
   try {
-    // Check authentication
     const session = await getServerSession(authOptions)
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
     }
 
     // Validate route parameters
-    const resolvedParams = await params
-    const { code: gameCode } = validateParams(resolvedParams, GameCodeParamSchema)
+    const { code: gameCode } = validateParams(params, GameCodeParamSchema)
 
-    // Validate and sanitize request body
-    const validatedData = await validateRequest(request, PlayerUpdateSchema, {
-      userId: getUserIdForRateLimit(session.user.id),
-      rateLimit: 'playerUpdate'
-    })
+    // ✅ Read body ONCE and then validate it
+    const body = await request.json()
+    console.log('🚨 DEBUG: Raw request body:', JSON.stringify(body, null, 2))
+    console.log('🚨 DEBUG: playerUpdate field:', body.playerUpdate)
+    
+    // ✅ Validate the pre-parsed body instead of re-reading
+    const validatedData = PlayerUpdateSchema.parse(body.playerUpdate)
+    
+    console.log('🔍 DEBUG: Fields being updated:', Object.keys(validatedData))
+    console.log('🔍 DEBUG: playlistsSelected value:', validatedData.playlistsSelected)
+    console.log('🔍 DEBUG: deviceName value:', validatedData.deviceName)
+    console.log('🔍 DEBUG: spotifyDeviceId value:', validatedData.spotifyDeviceId)
 
-    console.log('🔄 PUT request received for game:', gameCode)
-    console.log('🔄 Request body:', JSON.stringify(validatedData, null, 2))
-    console.log('🔄 User ID:', session.user.id)
-
-    console.log(`🔄 Player update request for ${gameCode}:`, validatedData)
-
-    // Find the game first to get the gameId
+    // Find game first
     const game = await prisma.game.findUnique({
       where: { code: gameCode },
-      select: { id: true, status: true }
+      include: {
+        players: true
+      }
     })
 
     if (!game) {
       return NextResponse.json({ error: 'Game not found' }, { status: 404 })
     }
 
-    // Check if game is in a state where updates are allowed
-    if (game.status === 'FINISHED' || game.status === 'CANCELLED') {
-      return NextResponse.json({ 
-        error: 'Cannot update player status in finished or cancelled game' 
-      }, { status: 400 })
+    // Check if user is in this game
+    const playerExists = game.players.some(p => p.userId === session.user.id)
+    if (!playerExists) {
+      return NextResponse.json({ error: 'You are not in this game' }, { status: 403 })
     }
 
-    // Atomic update - No more race conditions!
+    // Update player in database
     const updatedPlayer = await prisma.gamePlayer.update({
       where: {
         gameId_userId: {
@@ -225,16 +224,19 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       // Determine the specific action based on what was updated
       let action = 'player-updated' // default
       
-      if (validatedData.isReady !== undefined) {
+      if (validatedData.playlistsSelected !== undefined) {
+        action = 'playlists-changed'  // ← Move this FIRST
+        console.log('🎯 Setting action to playlists-changed')
+      } else if (validatedData.isReady !== undefined) {
         action = 'player-ready-changed'
       } else if (validatedData.spotifyDeviceId !== undefined || validatedData.deviceName !== undefined) {
         action = 'device-changed'
-      } else if (validatedData.playlistsSelected !== undefined) {
-        action = 'playlists-changed'
+        console.log('🎯 Setting action to device-changed because device fields present')
       } else if (validatedData.songsLoaded !== undefined || validatedData.loadingProgress !== undefined) {
         action = 'loading-progress-changed'
       }
 
+      console.log('🎯 Final action chosen:', action)
       console.log('🔄 About to emit WebSocket event')
       console.log('🔄 Action will be:', action)
       console.log('🔄 Player update data:', validatedData)

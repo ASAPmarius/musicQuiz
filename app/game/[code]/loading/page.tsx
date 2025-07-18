@@ -119,12 +119,42 @@ export default function SongLoading({ params }: SongLoadingProps) {
     }
   }, [isAuthenticated, gameCode])
 
+  // Add this useEffect to fetch initial game data
+  useEffect(() => {
+    const initializeGame = async () => {
+      if (!gameCode) return
+      
+      console.log('🚀 Initializing game data for:', gameCode)
+      await fetchGameDetails()
+    }
+    
+    initializeGame()
+  }, [gameCode]) // Only run when gameCode changes
+
   // Socket event listeners
   useEffect(() => {
     if (!socket) return
     
     const handleGameUpdate = (data: any) => {
-      console.log('🔔 Received game update:', data)
+      console.log('🎮 Received game update:', data)
+      console.log('🔍 Current game state before update:', game?.players?.map(p => ({
+        name: p.displayName,
+        playlists: p.playlistsSelected?.length || 0
+      })))
+      
+      if (data.action === 'playlists-changed') {
+        console.log('🔄 Player playlists changed, refreshing game data...')
+        
+        if (fetchTimeout.current) {
+          clearTimeout(fetchTimeout.current)
+        }
+        
+        fetchTimeout.current = setTimeout(async () => {
+          if (gameCode) {
+            await fetchGameDetails()
+          }
+        }, 500)
+      }
       
       if (data.action === 'player-loading-progress') {
         console.log(`📊 Progress update: Player ${data.userId} at ${data.progress}%`)
@@ -170,6 +200,21 @@ export default function SongLoading({ params }: SongLoadingProps) {
           }
         }, 1000)
       }
+      else if (data.action === 'playlists-changed') {
+        console.log('🔄 Player playlists changed, refreshing game data...')
+        
+        // Clear any existing timeout
+        if (fetchTimeout.current) {
+          clearTimeout(fetchTimeout.current)
+        }
+        
+        // Debounced fetch - wait 500ms in case multiple events come in
+        fetchTimeout.current = setTimeout(async () => {
+          if (gameCode) {
+            await fetchGameDetails()
+          }
+        }, 500)
+      }
     }
     
     socket.on('game-updated', handleGameUpdate)
@@ -180,7 +225,7 @@ export default function SongLoading({ params }: SongLoadingProps) {
         clearTimeout(fetchTimeout.current)
       }
     }
-  }, [socket, gameCode, session?.user?.id])
+  }, [socket, gameCode, game, session?.user?.id])
 
   const fetchGameDetails = async (codeToUse?: string) => {
     const currentGameCode = codeToUse || gameCode
@@ -205,7 +250,16 @@ export default function SongLoading({ params }: SongLoadingProps) {
       }
       
       const data = await response.json()
-      
+
+      console.log('✅ Raw API response:', data.game)
+      console.log('🔍 Players playlist data:', data.game.players?.map((p: LobbyPlayer) => ({
+        name: p.displayName,
+        userId: p.userId,
+        playlistsSelected: p.playlistsSelected,
+        playlistCount: p.playlistsSelected?.length || 0
+      })))
+
+      setGame(data.game)      
       console.log('✅ Received game data:', data.game)
       setGame(data.game)
       
@@ -222,14 +276,19 @@ export default function SongLoading({ params }: SongLoadingProps) {
   }
 
   const updatePlayerInDB = async (updates: Partial<LobbyPlayer>) => {
+    const timestamp = new Date().toISOString()
+    console.log(`🔍 ${timestamp} - About to send updates to API:`, updates)
+    
     try {
-      await fetch(`/api/game/${gameCode}`, {
+      const response = await fetch(`/api/game/${gameCode}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playerUpdate: updates })
       })
+      
+      console.log(`🔍 ${timestamp} - API response status:`, response.status)
     } catch (err) {
-      console.error('Failed to update player in DB:', err)
+      console.error(`🔍 ${timestamp} - Failed to update player in DB:`, err)
     }
   }
 
@@ -278,26 +337,15 @@ export default function SongLoading({ params }: SongLoadingProps) {
     }
     setSelectedPlaylistIds(newSelection)
     
-    // Update database and notify other players
     const updates: Partial<LobbyPlayer> = { 
       playlistsSelected: Array.from(newSelection) 
     }
+    
+    console.log('🔍 DEBUG: About to call updatePlayerInDB with:', updates)
+    console.log('🔍 DEBUG: newSelection size:', newSelection.size)
+    console.log('🔍 DEBUG: Array.from(newSelection):', Array.from(newSelection))
+    
     await updatePlayerInDB(updates)
-    
-    // Update socket status
-    const statusUpdate = { 
-      playlistsSelected: Array.from(newSelection) 
-    }
-    updatePlayerStatus(statusUpdate)
-    
-    // Emit socket event
-    if (socket) {
-      socket.emit('game-action', {
-        gameCode,
-        action: 'player-playlists-selected',
-        payload: { playlistCount: newSelection.size }
-      })
-    }
   }
 
   const loadSelectedSongs = async () => {
